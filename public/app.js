@@ -175,8 +175,85 @@ $("#set-tournament").addEventListener("click", async () => {
   } catch (e) { alert(`Could not save: ${e.message}`); }
 });
 
+// ---------------------------------------------------------------- demo mode
+// `?demo=1` replaces the live socket with a canned 100-player field built from
+// real leaderboard names, so the whole flow can be exercised with no game on.
+// Entries are still written to Firestore (contest id "demo") so the real write
+// path is tested; the lock is simulated locally and never mirrored, which keeps
+// the demo contest reusable. The season leaderboard skips it.
+const DEMO_ID = "demo";
+
+async function bootDemo() {
+  state.tournamentId = DEMO_ID;
+  const res = await fetch("/demo.json", { cache: "no-store" });
+  if (!res.ok) { setStatus("Could not load demo.json", "error"); return; }
+  const data = await res.json();
+  state.demoSeed = data;
+  state.tournament = { ...data.tournament };
+  state.players = data.players.map((p) => ({ ...p }));
+  // The rules require the contest doc to exist (with gameStarted false) before
+  // entries may be written. Demo never flips it to true, so it stays reusable.
+  try {
+    await setDoc(
+      doc(db, "contests", DEMO_ID),
+      { tournamentId: DEMO_ID, gameStarted: false, title: "Demo", updatedAt: serverTimestamp() },
+      { merge: true }
+    );
+  } catch (e) {
+    setStatus(`Could not prepare the demo contest: ${e.message}`, "error");
+  }
+  $("#demo-bar").hidden = false;
+  showView("draft");
+  watchEntries();
+  renderDemoState();
+  render();
+}
+
+function renderDemoState() {
+  const alive = state.players.filter(isAlive).length;
+  $("#demo-state").textContent =
+    `${alive} of ${state.players.length} still in` +
+    (state.tournament?.game_started ? " · clock running" : " · picks open");
+}
+
+function demoBust(n = 1) {
+  for (let k = 0; k < n; k++) {
+    const alive = state.players.filter(isAlive);
+    if (alive.length <= 1) break;
+    const victim = alive[Math.floor(Math.random() * alive.length)];
+    const others = alive.filter((p) => p.id !== victim.id);
+    const hitman = others[Math.floor(Math.random() * others.length)];
+    victim.is_active = false;
+    victim.elimination_position = alive.length; // busting now takes this place
+    victim.placement = alive.length;
+    victim.hitman_name = hitman ? hitman.name : null;
+  }
+  renderDemoState();
+  render();
+}
+
+function wireDemo() {
+  $("#demo-start").addEventListener("click", () => {
+    state.tournament.game_started = true;
+    renderDemoState();
+    render();
+  });
+  $("#demo-bust").addEventListener("click", () => demoBust(1));
+  $("#demo-bust10").addEventListener("click", () => demoBust(10));
+  $("#demo-reset").addEventListener("click", () => {
+    state.tournament = { ...state.demoSeed.tournament };
+    state.players = state.demoSeed.players.map((p) => ({ ...p }));
+    renderDemoState();
+    render();
+  });
+}
+
 // ---------------------------------------------------------------- boot
 async function boot() {
+  if (new URLSearchParams(location.search).has("demo")) {
+    wireDemo();
+    return bootDemo();
+  }
   const param = new URLSearchParams(location.search).get("t");
   let id = param ? parseInt(param, 10) : NaN;
   if (isNaN(id)) {
@@ -458,6 +535,7 @@ async function renderSeason() {
 
     const contests = await getDocs(collection(db, "contests"));
     for (const c of contests.docs) {
+      if (c.id === DEMO_ID) continue; // test data never counts toward the season
       const [entriesSnap, finalSnap] = await Promise.all([
         getDocs(collection(db, "contests", c.id, "entries")),
         getDoc(doc(db, "contests", c.id, "results", "final")),

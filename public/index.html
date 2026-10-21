@@ -19,6 +19,16 @@
 
 <div id="status" class="banner"></div>
 
+<!-- Demo-mode controls. Only shown with ?demo=1 -->
+<div id="demo-bar" class="banner" hidden>
+  <strong>Demo mode</strong> — 100 real league players, no live game.
+  <button id="demo-start" class="link">Start clock (lock picks)</button>
+  <button id="demo-bust" class="link">Bust next player</button>
+  <button id="demo-bust10" class="link">Bust 10</button>
+  <button id="demo-reset" class="link">Reset field</button>
+  <span id="demo-state" class="muted"></span>
+</div>
+
 <main>
   <!-- Name gate -->
   <section id="view-name" hidden>
