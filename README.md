@@ -124,6 +124,45 @@ auth only, with no Cloud Functions. That is deliberate: Spark blocks outbound
 requests from Cloud Functions to non-Google hosts, which would have broken any
 design that proxied the Freeroll API.
 
+## Demo mode (testing with no live game)
+
+Open the site with `?demo=1`:
+
+```
+https://freeroll-fantasy-draft.web.app/?demo=1
+```
+
+This replaces the live socket with a canned field of **100 real Freeroll
+Atlanta players**, pulled from `/api/rankings/advanced` on openbarleague.com —
+all 89 players who have a nickname, plus the 11 most-active players without
+one. The data lives in `public/demo.json`.
+
+A control bar appears with:
+
+- **Start clock (lock picks)** — flips `game_started` locally so you can see
+  the picks-closed state.
+- **Bust next player** / **Bust 10** — eliminates random players and credits
+  the knockout to another survivor, so you can watch live scores climb.
+- **Reset field** — puts all 100 back in.
+
+Entries are still written to Firestore under contest id `demo`, so the real
+write path and the standings rendering are genuinely exercised. Two deliberate
+differences from a live contest: the lock is simulated in the page and never
+mirrored to Firestore (which keeps the demo contest reusable instead of
+permanently locked), and the season leaderboard skips contest `demo` so test
+data never counts.
+
+Verified by replaying a full 100-player tournament through the scorer:
+placements come out covering 1–100 exactly once, and a sample 5-pick entry
+finished on 172.3 points with 4 knockouts and a best finish of 5th.
+
+One thing that mock surfaces: at a 100-player field the curve compresses at the
+top — 2nd place scores 97 against 1st at 100, because beating 98 of 99 players
+is nearly the same as beating all 99. At your real field sizes (20–30) the
+separation is much better: 2nd of 27 scores 88.9. If Freeroll ever runs
+100-player events, raise `gamma` in `public/scoring.js` to keep the top places
+apart.
+
 ## Pointing it at tonight's game
 
 The socket needs a tournament id, and discovering the live one would require
