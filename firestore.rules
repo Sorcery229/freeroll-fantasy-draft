@@ -1,0 +1,78 @@
+rules_version = '2';
+
+// Fantasy draft for Freeroll Atlanta.
+//
+// Identity is Firebase ANONYMOUS auth: every browser gets a stable uid with no
+// sign-up, which is what lets someone come back later and still be the same
+// entrant. The display name is just a label stored on their entrant doc.
+//
+// THE LOCK: entries may only be written while contests/{id}.gameStarted is
+// false. That flag is monotonic — once any watching client sees game_started
+// from the Freeroll socket it is set to true, and these rules then refuse all
+// further writes. Enforcement happens on Firestore's servers, not in the page,
+// so editing the JS does not get you past it. The residual weakness is that
+// the flag depends on some client having observed the start; see README.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Anyone may read everything — standings and the season leaderboard are public.
+    match /{document=**} {
+      allow read: if true;
+    }
+
+    // Which tournament the app is pointed at.
+    match /config/{docId} {
+      allow write: if signedIn();
+    }
+
+    match /entrants/{entrantId} {
+      // You may only create or rename yourself.
+      allow create, update: if signedIn()
+        && request.auth.uid == entrantId
+        && request.resource.data.name is string
+        && request.resource.data.name.size() >= 2
+        && request.resource.data.name.size() <= 40;
+      allow delete: if false;
+    }
+
+    match /contests/{tournamentId} {
+      // gameStarted is monotonic: false -> true only, never back.
+      allow create: if signedIn() && request.resource.data.gameStarted == false;
+      allow update: if signedIn()
+        && (resource.data.gameStarted == false || request.resource.data.gameStarted == true);
+      allow delete: if false;
+
+      match /entries/{entrantId} {
+        function contestOpen() {
+          return exists(/databases/$(database)/documents/contests/$(tournamentId))
+            && get(/databases/$(database)/documents/contests/$(tournamentId)).data.gameStarted == false;
+        }
+        function validEntry() {
+          return request.resource.data.picks is list
+            && request.resource.data.picks.size() == 5
+            && request.resource.data.name is string
+            && request.resource.data.name.size() >= 2
+            && request.resource.data.name.size() <= 40;
+        }
+
+        // Your own entry, only before the clock starts.
+        allow create, update: if signedIn()
+          && request.auth.uid == entrantId
+          && contestOpen()
+          && validEntry();
+        allow delete: if signedIn() && request.auth.uid == entrantId && contestOpen();
+      }
+
+      // Frozen final roster, written once the tournament is over so past
+      // contests can still be scored without a live socket.
+      match /results/{docId} {
+        allow create, update: if signedIn();
+        allow delete: if false;
+      }
+    }
+  }
+}

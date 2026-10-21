@@ -1,0 +1,22 @@
+name: Deploy to Firebase Hosting
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # No build step: the app is plain ES modules served as-is, and its
+      # Firebase config comes from /__/firebase/init.json at runtime.
+      - name: Deploy Hosting and Firestore rules
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: freeroll-fantasy-draft
+          channelId: live
