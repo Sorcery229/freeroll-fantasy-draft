@@ -69,7 +69,7 @@ const state = {
 
 const $ = (sel) => document.querySelector(sel);
 const el = {
-  status: $("#status"), whoami: $("#whoami"), conn: $("#conn"),
+  status: $("#status"), whoami: $("#whoami"),
   viewName: $("#view-name"), viewDraft: $("#view-draft"),
   viewStandings: $("#view-standings"), viewSeason: $("#view-season"),
 };
@@ -156,6 +156,10 @@ $("#change-name").addEventListener("click", () => {
   showView("name");
 });
 
+if (new URLSearchParams(location.search).has("setup")) {
+  $("#set-tournament").hidden = false;
+}
+
 $("#set-tournament").addEventListener("click", async () => {
   const current = state.tournamentId ?? "";
   const next = prompt(
@@ -181,7 +185,7 @@ async function boot() {
   }
   if (isNaN(id)) {
     showView("standings");
-    setStatus("No tournament selected yet. Use \u201CSet tournament\u201D below to point this page at tonight\u2019s game.");
+    setStatus("No tournament is being followed yet. An organiser can point this page at tonight\u2019s game by opening it with ?setup=1 in the address bar.");
     return;
   }
   state.tournamentId = id;
@@ -203,10 +207,8 @@ function connectSocket() {
 
   const join = () => s.emit("joinRoom", String(state.tournamentId));
 
-  s.on("connect", () => { el.conn.textContent = "live"; join(); });
-  s.on("disconnect", () => { el.conn.textContent = "reconnecting…"; });
+  s.on("connect", () => { setStatus(""); join(); });
   s.on("connect_error", (err) => {
-    el.conn.textContent = "offline";
     setStatus(`Cannot reach the live tournament feed (${err.message}).`, "error");
   });
 

@@ -73,9 +73,9 @@
 </main>
 
 <footer>
-  <span id="conn" class="muted">connecting…</span>
   <button id="change-name" class="link">Change name</button>
-  <button id="set-tournament" class="link">Set tournament</button>
+  <!-- Organiser-only. Hidden unless the URL carries ?setup=1 -->
+  <button id="set-tournament" class="link" hidden>Set tournament</button>
 </footer>
 
 <!-- socket.io client provides the global `io` used by app.js -->
