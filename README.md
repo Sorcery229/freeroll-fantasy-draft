@@ -137,13 +137,24 @@ Atlanta players**, pulled from `/api/rankings/advanced` on openbarleague.com —
 all 89 players who have a nickname, plus the 11 most-active players without
 one. The data lives in `public/demo.json`.
 
+The demo also loads automatically on the main page whenever no live game is
+configured, so the landing page is never empty.
+
+It opens **mid-tournament**: the clock is running, 42 of the 100 players are
+already out, and **12 synthetic predictions** are in the standings, named after
+real league nicknames. Those predictions exist only in the page — they are never
+written to Firestore — so the demo looks populated without inventing data in
+your database. Everything is seeded from a fixed value, so it looks identical on
+every load.
+
 A control bar appears with:
 
 - **Start clock (lock picks)** — flips `game_started` locally so you can see
   the picks-closed state.
 - **Bust next player** / **Bust 10** — eliminates random players and credits
   the knockout to another survivor, so you can watch live scores climb.
-- **Reset field** — puts all 100 back in.
+- **Reset field** — puts all 100 back in and reopens picks, which is how you
+  make your own prediction against the mock field.
 
 Entries are still written to Firestore under contest id `demo`, so the real
 write path and the standings rendering are genuinely exercised. Two deliberate
