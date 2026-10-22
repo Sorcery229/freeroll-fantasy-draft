@@ -57,7 +57,7 @@ const state = {
   activeId: null,        // tournament currently open
   contestId: null,       // Firestore contest doc id
   entries: [], mockEntries: [],
-  selected: [], expanded: null, math: null,
+  selected: [], expanded: new Set(), math: new Set(),
   metaSaved: false, resultsFrozen: false, finishedOpen: null,
   sockets: {},
   filter: "", poolFilter: "",
@@ -552,9 +552,9 @@ function renderStandingsTable(players) {
         <td><strong>${r.score.totalPoints}</strong></td>
         <td class="${r.score.picksAlive ? "alive-yes" : "alive-no"}">${r.score.picksAlive}/${SCORING.picksRequired}</td>
         <td><button class="draftbtn" data-id="${r.entrantId}">${
-          state.expanded === r.entrantId ? "Hide ▾" : "View ▸"}</button></td>
+          state.expanded.has(r.entrantId) ? "Hide ▾" : "View ▸"}</button></td>
       </tr>
-      ${state.expanded === r.entrantId ? `<tr class="detail"><td colspan="5">
+      ${state.expanded.has(r.entrantId) ? `<tr class="detail"><td colspan="5">
         <table class="subtable"><thead><tr><th>Player</th><th>Status</th><th>Points now</th></tr></thead>
         <tbody>${[...r.score.picks].sort((a, b) => b.currentPoints - a.currentPoints)
           .map((p) => `<tr class="${p.alive ? "" : "dim"}">
@@ -565,54 +565,64 @@ function renderStandingsTable(players) {
             <td><strong>${p.currentPoints}</strong></td></tr>`).join("")}
           <tr class="sum total"><td>Projected total</td>
             <td>${r.score.projectionBonus > 0
-              ? `<button class="mathbtn" data-id="${r.entrantId}">why? ${state.math === r.entrantId ? "▾" : "▸"}</button>`
+              ? `<button class="mathbtn" data-id="${r.entrantId}">why? ${state.math.has(r.entrantId) ? "▾" : "▸"}</button>`
               : ""}</td>
             <td><strong>${r.score.totalPoints}</strong></td></tr>
         </tbody></table>
-        ${state.math === r.entrantId ? mathPanel(r.score) : ""}
+        ${state.math.has(r.entrantId) ? mathPanel(r.score) : ""}
       </td></tr>` : ""}
         `).join("")}</tbody></table></div>`;
   $("#standings-table").querySelectorAll("button.mathbtn").forEach((b) =>
     b.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      state.math = state.math === b.dataset.id ? null : b.dataset.id;
+      if (state.math.has(b.dataset.id)) state.math.delete(b.dataset.id);
+      else state.math.add(b.dataset.id);
       renderStandingsTable(players);
     }));
   $("#standings-table").querySelectorAll("button.draftbtn").forEach((b) =>
     b.addEventListener("click", (ev) => {
       ev.stopPropagation();
-      state.expanded = state.expanded === b.dataset.id ? null : b.dataset.id;
+      // Opening one draft must not close the others.
+      if (state.expanded.has(b.dataset.id)) state.expanded.delete(b.dataset.id);
+      else state.expanded.add(b.dataset.id);
       renderStandingsTable(players);
     }));
 }
 
-/** Compact arithmetic behind the projected total. */
+/** The projection, explained in plain sentences. */
 function mathPanel(score) {
   const alive = score.picks.filter((p) => p.alive);
   if (!alive.length) return "";
-  const flat = Math.round(alive.length * score.bubbleValue * 10) / 10;
-  const chips = alive
-    .map((p) => `<span class="mchip">${p.effectivePlace}${ordinal(p.effectivePlace)}
-      <b>${p.projectedPoints}</b></span>`)
-    .join('<span class="mop">+</span>');
+  const k = alive.length;
+  const bubble = score.bubbleValue;
+  const places = alive.map((p) => `${p.effectivePlace}${ordinal(p.effectivePlace)}`);
+  const vals = alive.map((p) => p.projectedPoints);
+  const sum = Math.round(vals.reduce((s, v) => s + v, 0) * 10) / 10;
+  const flat = Math.round(k * bubble * 10) / 10;
+  const spelled = ["", "one", "two", "three", "four", "five"][k] ?? String(k);
+  const placeList = places.length > 1
+    ? `${places.slice(0, -1).join(", ")} and ${places[places.length - 1]}`
+    : places[0];
+
   return `<div class="mathpanel">
-    <div class="mline">
-      <span class="mkey">${score.playersAlive} left</span>
-      next bust is ${score.playersAlive}${ordinal(score.playersAlive)}, worth
-      <b>${score.bubbleValue}</b> each
-    </div>
-    <div class="mline">
-      <span class="mkey">worst case</span>
-      ${chips}<span class="mop">=</span><b class="mgood">${Math.round((flat + score.projectionBonus) * 10) / 10}</b>
-    </div>
-    <div class="mline">
-      <span class="mkey">not</span>
-      ${alive.length} × ${score.bubbleValue} = ${flat}
-      <span class="mop">→</span><b class="mgood">+${score.projectionBonus}</b>
-    </div>
-    <div class="mfoot">Your picks can only finish higher than this, never lower.</div>
+    <p>${k === 1 ? "One of your picks is" : `${cap(spelled)} of your picks are`} still in.
+    With <strong>${score.playersAlive} players left</strong>, the next person out
+    finishes ${score.playersAlive}${ordinal(score.playersAlive)}, which pays
+    <strong>${bubble}</strong> — so that is what
+    ${k === 1 ? "it is" : "each of them is"} worth right now.</p>
+
+    ${k > 1 ? `<p>But they cannot all finish in the same place. If they were the
+    next ${spelled} out, they would take ${placeList} — paying
+    <strong>${sum}</strong> between them, not ${k} × ${bubble} =
+    <strong>${flat}</strong>.</p>` : ""}
+
+    <p>Your projected total already counts that extra
+    <strong>${score.projectionBonus}</strong>. It is the least you can finish on:
+    the longer your picks last, the more they pay.</p>
   </div>`;
 }
+
+function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
 /** "3m ago" / "1h 12m ago", matching the dashboard's knockout feed. */
 function timeAgo(ts) {

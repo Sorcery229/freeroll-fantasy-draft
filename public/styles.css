@@ -242,37 +242,13 @@ td.season { color: var(--cyan-dim); font-weight: 700; }
 }
 .mathbtn:hover { border-color: var(--line-strong); }
 .mathpanel {
-  margin-top: 10px; border: 1px solid rgba(6,182,212,.25); border-radius: 10px;
-  padding: 12px 14px; background: rgba(8,145,178,.08); font-size: 15px;
-  display: grid; gap: 8px;
+  margin-top: 12px; border-left: 3px solid rgba(6,182,212,.45);
+  padding: 2px 0 2px 14px; font-size: 15px; line-height: 1.65; max-width: 620px;
 }
-.mathpanel .mline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.mathpanel .mkey {
-  min-width: 86px; font-size: 12px; text-transform: uppercase; letter-spacing: .6px;
-  color: var(--muted);
-}
-.mathpanel .mchip {
-  background: rgba(6,182,212,.14); border-radius: 7px; padding: 2px 9px;
-  font-size: 14px; color: var(--muted);
-}
-.mathpanel .mchip b { color: var(--text); margin-left: 5px; }
-.mathpanel .mop { color: var(--muted); }
-.mathpanel .mgood { color: var(--good); }
-.mathpanel .mfoot { font-size: 13px; color: var(--muted); }
+.mathpanel p { margin: 0 0 9px; color: #cbd5e1; }
+.mathpanel p:last-child { margin: 0; }
+.mathpanel strong { color: var(--cyan); font-weight: 600; }
 .subtable tr.total td { color: var(--cyan); font-size: 16px; }
-
-/* survivors + TD, above the clock */
-.metabox {
-  display: flex; align-items: baseline; justify-content: space-between;
-  gap: 12px; flex-wrap: wrap; margin-bottom: 12px;
-}
-.metabox .left-big { display: flex; align-items: baseline; gap: 8px; }
-.metabox .left-big .n {
-  font-size: 40px; font-weight: 800; line-height: 1; color: var(--good);
-  text-shadow: 0 0 16px rgba(74,222,128,.4);
-}
-.metabox .left-big .of { font-size: 16px; color: var(--muted); }
-.metabox .td { font-size: 15px; color: var(--muted); }
 
 /* finished contests */
 .fcard {
