@@ -117,32 +117,48 @@ export function effectivePlace(p, playersAlive, fieldSize) {
   return Math.max(1, playersAlive);
 }
 
-/** Score one entry (array of {id, name}) against the current roster. */
+/**
+ * Score one entry (array of {id}) against the current roster.
+ *
+ * Surviving picks are credited with DISTINCT finishing places, counting back
+ * from the current bubble. If 11 players remain and you hold 3 of them they
+ * cannot all finish 11th — at worst they go out 11th, 10th and 9th. Crediting
+ * each with 11th understates the entry, so places are assigned descending.
+ * The sum does not depend on which pick takes which place, so this is a floor
+ * on the entry's final score rather than a guess.
+ */
 export function scoreEntry(picks, players, cfg = SCORING) {
   const byId = new Map(players.map((p) => [Number(p.id), p]));
   const fieldSize = players.length;
   const playersAlive = players.filter(isAlive).length;
   const kos = knockoutsByName(players);
 
-  const scored = [];
+  const resolved = [];
   for (const pick of picks) {
-    const p = byId.get(Number(pick.id));
-    if (!p) continue;
-    const place = effectivePlace(p, playersAlive, fieldSize);
+    const p = byId.get(Number(pick.id ?? pick.tournament_draft_player_id));
+    if (p) resolved.push(p);
+  }
+
+  let nextAlivePlace = playersAlive;
+  const scored = resolved.map((p) => {
+    const alive = isAlive(p);
+    const place = alive
+      ? Math.max(1, nextAlivePlace--)
+      : effectivePlace(p, playersAlive, fieldSize);
     const fp = finishPoints(place, fieldSize, cfg);
     const koCount = kos.get(norm(p.name)) ?? 0;
     const kp = koCount * cfg.knockoutPoints;
-    scored.push({
+    return {
       id: Number(p.id),
       name: p.nickname ? `${p.nickname} (${p.name})` : p.name,
-      alive: isAlive(p),
+      alive,
       effectivePlace: place,
       finishPoints: round1(fp),
       knockouts: koCount,
       knockoutPoints: kp,
       totalPoints: round1(fp + kp),
-    });
-  }
+    };
+  });
 
   const finish = scored.reduce((s, x) => s + x.finishPoints, 0);
   const ko = scored.reduce((s, x) => s + x.knockoutPoints, 0);
@@ -158,7 +174,6 @@ export function scoreEntry(picks, players, cfg = SCORING) {
     picks: scored,
   };
 }
-
 /** Best score reachable in a field of this size (picks finish 1..n). */
 export function maxAchievable(fieldSize, cfg = SCORING) {
   let total = 0;

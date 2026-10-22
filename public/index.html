@@ -63,7 +63,7 @@
     </div>
   </section>
 
-  <!-- One tournament: standings first, knockouts second, clock last -->
+  <!-- One tournament: standings left, clock + knockouts right -->
   <section id="view-standings" hidden>
     <div id="t-head" class="t-head"></div>
     <div class="split">
@@ -75,26 +75,37 @@
         <div id="standings-table"></div>
       </div>
       <aside class="col-side">
+        <div id="t-timer" class="timer"></div>
         <h2 class="section">Knockouts</h2>
         <div id="ko-feed" class="feed"></div>
       </aside>
     </div>
-    <div id="t-timer" class="timer"></div>
   </section>
 
   <!-- Picks -->
   <section id="view-draft" hidden>
-    <div id="draft-head" class="page-head"></div>
+    <div id="draft-head" class="t-head"></div>
+
     <div id="draft-locked" class="banner locked" hidden>
       <strong>Picks are closed.</strong>
       The tournament director has started the clock, so hands have been played.
       Your existing entry still counts.
     </div>
+
+    <div id="draft-done" class="submitted" hidden></div>
+
     <div id="draft-body">
-      <div class="summary">
-        <span id="pick-count"></span>
-        <button id="clear-picks" class="link">Clear</button>
+      <div class="actionbar">
+        <div class="actionbar-left">
+          <div id="pick-count" class="count"></div>
+          <div class="warn">⚠ Picks are final once submitted — you cannot change them.</div>
+        </div>
+        <div class="actionbar-right">
+          <button id="clear-picks" class="link">Clear</button>
+          <button id="submit-picks" class="bigbtn" disabled>Submit my picks</button>
+        </div>
       </div>
+      <p id="draft-error" class="error"></p>
       <div id="chips" class="chips"></div>
       <div class="split">
         <div class="col-main">
@@ -108,8 +119,6 @@
           <div id="roster" class="feed"></div>
         </aside>
       </div>
-      <button id="submit-picks" class="bigbtn" disabled>Submit my picks</button>
-      <p id="draft-error" class="error"></p>
     </div>
   </section>
 

@@ -300,6 +300,10 @@ async function submitPicks() {
   if (picks.length !== SCORING.picksRequired) {
     $("#draft-error").textContent = `Pick exactly ${SCORING.picksRequired} players.`; return;
   }
+  const names = picks.map((p) => p.name).join(", ");
+  if (!confirm(`Submit these ${picks.length} picks?\n\n${names}\n\nPicks are final — you cannot change them afterwards.`)) {
+    return;
+  }
   try {
     await setDoc(doc(db, "contests", String(state.contestId), "entries", state.uid),
       { name: state.name, picks, submittedAt: serverTimestamp() });
@@ -468,16 +472,15 @@ function renderStandingsTable(players) {
       </tr>
       ${state.expanded === r.entrantId ? `<tr class="detail"><td colspan="6">
         <div class="draft-title">${esc(r.name)}'s draft</div>
-        <table class="subtable"><thead><tr><th>Pick</th><th>Player</th><th>Status</th><th>Points</th></tr></thead>
+        <table class="subtable"><thead><tr><th>Player</th><th>Status</th><th>Points</th></tr></thead>
         <tbody>${[...r.score.picks].sort((a, b) => b.totalPoints - a.totalPoints)
           .map((p) => `<tr class="${p.alive ? "" : "dim"}">
-            <td>${p.pickOrder}</td>
             <td>${esc(p.name)}</td>
             <td>${p.alive
-              ? `<span class="alive-yes">still in</span> <span class="muted">(${p.effectivePlace}th if out now)</span>`
+              ? `<span class="alive-yes">still in</span>`
               : `<span class="muted">finished</span> <span class="place">#${p.effectivePlace}</span>`}</td>
             <td><strong>${p.totalPoints}</strong></td></tr>`).join("")}
-          <tr class="sum"><td></td><td>Total</td><td></td><td><strong>${r.score.totalPoints}</strong></td></tr>
+          <tr class="sum"><td>Total</td><td></td><td><strong>${r.score.totalPoints}</strong></td></tr>
         </tbody></table></td></tr>` : ""}
     `).join("")}</tbody></table></div>`;
   $("#standings-table").querySelectorAll("button.draftbtn").forEach((b) =>
@@ -497,8 +500,19 @@ function renderDraft() {
 
   const locked = !TEST_MODE && Boolean(t?.game_started);
   $("#draft-locked").hidden = !locked;
-  $("#draft-body").hidden = locked;
-  if (locked) return;
+
+  // Picks are final. Once an entry is in, show it read-only. Test contests stay
+  // editable so a live game can be used for dry runs.
+  const mine = state.entries.find((e) => e.entrantId === state.uid);
+  const final = Boolean(mine) && !TEST_MODE;
+  $("#draft-done").hidden = !final;
+  if (final) {
+    $("#draft-done").innerHTML = `<h3>Your picks are in</h3>
+      <ol>${mine.picks.map((p) => `<li>${esc(p.name)}</li>`).join("")}</ol>
+      <p class="muted" style="margin:10px 0 0">These are final. Follow them on the standings page.</p>`;
+  }
+  $("#draft-body").hidden = locked || final;
+  if (locked || final) return;
 
   const pool = c.players.filter(isAlive);
   const f = state.poolFilter.trim().toLowerCase();

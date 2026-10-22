@@ -60,11 +60,20 @@ service cloud.firestore {
         }
 
         // Your own entry, only before the clock starts.
-        allow create, update: if signedIn()
+        allow create: if signedIn()
           && request.auth.uid == entrantId
           && contestOpen()
           && validEntry();
-        allow delete: if signedIn() && request.auth.uid == entrantId && contestOpen();
+
+        // PICKS ARE FINAL. An existing entry cannot be edited or deleted in a
+        // real contest; only "test-<id>" contests stay editable so a live game
+        // can be used for dry runs.
+        allow update: if signedIn()
+          && request.auth.uid == entrantId
+          && contestOpen()
+          && validEntry()
+          && tournamentId.matches('test-.*');
+        allow delete: if false;
       }
 
       // Frozen final roster, written once the tournament is over so past
