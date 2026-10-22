@@ -22,7 +22,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, setDoc, collection, onSnapshot,
-  getDocs, serverTimestamp,
+  getDocs, query, where, limit, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import {
   firebaseConfig, FREEROLL_ORIGIN, FOLLOW_TOURNAMENT_IDS, TEST_MODE,
@@ -58,7 +58,7 @@ const state = {
   contestId: null,       // Firestore contest doc id
   entries: [], mockEntries: [],
   selected: [], expanded: new Set(), math: new Set(),
-  metaSaved: false, resultsFrozen: false, finishedOpen: null,
+  metaSaved: false, resultsFrozen: false, finishedOpen: null, showLeft: false,
   sockets: {},
   filter: "", poolFilter: "",
   demo: false, demoSeed: null,
@@ -128,12 +128,27 @@ async function handleAuth(user) {
 
 $("#name-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  if (!db || !state.uid) { $("#name-error").textContent = "Still connecting — try again in a second."; return; }
+  if (!db || !state.uid) { $("#name-error").textContent = "Still connecting, try again in a second."; return; }
   const name = $("#name-input").value.trim();
   if (name.length < 2) { $("#name-error").textContent = "Name must be at least 2 characters."; return; }
   $("#name-error").textContent = "";
+
   try {
-    await setDoc(doc(db, "entrants", state.uid), { name, updatedAt: serverTimestamp() }, { merge: true });
+    // One name per entrant. Compared lower-cased, so "Greg" cannot sit next to
+    // "greg" in the standings.
+    const taken = await getDocs(query(
+      collection(db, "entrants"),
+      where("name_lc", "==", name.toLowerCase()),
+      limit(5)
+    ));
+    const clash = taken.docs.find((d) => d.id !== state.uid);
+    if (clash) {
+      $("#name-error").textContent = `"${name}" is already taken. Pick another one.`;
+      return;
+    }
+
+    await setDoc(doc(db, "entrants", state.uid),
+      { name, name_lc: name.toLowerCase(), updatedAt: serverTimestamp() }, { merge: true });
     state.name = name;
     el.whoami.textContent = `Playing as ${name}`;
     await boot();
@@ -141,6 +156,7 @@ $("#name-form").addEventListener("submit", async (ev) => {
     $("#name-error").textContent = e.message;
   }
 });
+
 $("#change-name").addEventListener("click", () => {
   $("#name-input").value = state.name ?? "";
   showView("name");
@@ -363,7 +379,7 @@ async function submitPicks() {
     $("#draft-error").textContent = `Pick exactly ${SCORING.picksRequired} players.`; return;
   }
   const names = picks.map((p) => p.name).join(", ");
-  if (!confirm(`Submit these ${picks.length} picks?\n\n${names}\n\nPicks are final — you cannot change them afterwards.`)) {
+  if (!confirm(`Submit these ${picks.length} picks?\n\n${names}\n\nPicks are final. You cannot change them afterwards.`)) {
     return;
   }
   try {
@@ -374,7 +390,7 @@ async function submitPicks() {
     showView("standings");
   } catch (e) {
     $("#draft-error").textContent = e.code === "permission-denied"
-      ? "Picks are closed — the clock has started." : e.message;
+      ? "Picks are closed, the clock has started." : e.message;
   }
 }
 $("#submit-picks").addEventListener("click", submitPicks);
@@ -485,7 +501,16 @@ function renderTournament() {
   $("#t-meta").innerHTML = `
     <div class="left-big"><span class="n">${remaining(c)}</span>
       <span class="of">of ${players.length} left</span></div>
-    <div class="td">TD ${esc(t?.td ?? "—")}</div>`;
+    <div class="td">TD ${esc(t?.td ?? "")}</div>
+    <button id="whos-left" class="link">${state.showLeft ? "hide" : "who\u2019s left?"}</button>
+    ${state.showLeft ? `<div class="leftlist">${
+      players.filter(isAlive)
+        .map((p) => `<span class="lchip">${esc(p.nickname || p.name)}</span>`)
+        .join("") || `<span class="muted">Nobody left.</span>`}</div>` : ""}`;
+  $("#whos-left").addEventListener("click", () => {
+    state.showLeft = !state.showLeft;
+    renderTournament();
+  });
 
   renderClock();
 
@@ -608,17 +633,17 @@ function mathPanel(score) {
     <p>${k === 1 ? "One of your picks is" : `${cap(spelled)} of your picks are`} still in.
     With <strong>${score.playersAlive} players left</strong>, the next person out
     finishes ${score.playersAlive}${ordinal(score.playersAlive)}, which pays
-    <strong>${bubble}</strong> — so that is what
+    <strong>${bubble}</strong>, so that is what
     ${k === 1 ? "it is" : "each of them is"} worth right now.</p>
 
     ${k > 1 ? `<p>But they cannot all finish in the same place. If they were the
-    next ${spelled} out, they would take ${placeList} — paying
-    <strong>${sum}</strong> between them, not ${k} × ${bubble} =
+    next ${spelled} out, they would take ${placeList}, paying
+    <strong>${sum}</strong> between them rather than ${k} × ${bubble} =
     <strong>${flat}</strong>.</p>` : ""}
 
     <p>Your projected total already counts that extra
-    <strong>${score.projectionBonus}</strong>. It is the least you can finish on:
-    the longer your picks last, the more they pay.</p>
+    <strong>${score.projectionBonus}</strong>. It is the least you can finish on,
+    and the longer your picks last the more they pay.</p>
   </div>`;
 }
 
@@ -675,7 +700,7 @@ function renderDraft() {
         const p = pool.find((x) => Number(x.id) === id);
         return p ? `<span class="chip" data-id="${id}"><span class="ord">${i + 1}</span>${esc(p.nickname || p.name)} ✕</span>` : "";
       }).join("")
-    : `<span class="muted">Nobody picked yet — choose ${SCORING.picksRequired} from the field.</span>`;
+    : `<span class="muted">Nobody picked yet, choose ${SCORING.picksRequired} from the field.</span>`;
 
   $("#pool-count").textContent = `${shown.length} of ${pool.length} players still in`;
   $("#pool").innerHTML = shown.map((p) => {
@@ -730,8 +755,6 @@ function renderRules() {
     pick <strong>${picks} players</strong> from the field. As the tournament runs,
     your picks earn points for how deep they go. The deeper they run, the more you
     score.</p>
-    <p class="muted">The player data comes live from the Freeroll dashboard — the
-    same roster, knockouts and clock the tournament director is working from.</p>
 
     <h2 class="section">Making picks</h2>
     <ul>
@@ -739,44 +762,43 @@ function renderRules() {
       <li><strong>Anyone can pick the same player.</strong> There is no draft order
       and nobody gets locked out of a popular name.</li>
       <li><strong>Picks close when the TD starts the clock.</strong> Once cards are
-      in the air, nobody can enter — otherwise a late entrant would already know
-      who had busted.</li>
+      in the air, nobody can enter, otherwise someone who already won a few hands
+      would be picked with a chip stack advantage.</li>
       <li><strong>Picks are final.</strong> Once submitted they cannot be changed.</li>
       <li>One entry per person per game.</li>
     </ul>
 
     <h2 class="section">How a pick scores</h2>
     <p>A pick's points depend on <strong>what fraction of the field it beat</strong>,
-    not on raw place. That way a 12-player Tuesday and a 37-player Saturday are
+    not on raw place. That way a 12 player Tuesday and a 37 player Wednesday are
     scored on the same curve.</p>
     <p class="formula">points = ${SCORING.maxFinishPoints} × (players beaten ÷ (field − 1))
       <sup>${SCORING.gamma}</sup></p>
-    <p>The cube is what makes a deep run pay. Finishing in the top few is worth
-    far more than drifting out mid-pack. In a ${N}-player field:</p>
+    <p>The cube is what makes a deep run pay. Finishing in the top few is worth far
+    more than drifting out mid pack. In a ${N} player field:</p>
     <div class="table-wrap"><table><thead><tr>
       <th>Finish</th>${sample.map((p) => `<th>${p}${ordinal(p)}</th>`).join("")}
     </tr></thead><tbody><tr>
       <td>Points</td>${sample.map((p) =>
         `<td><strong>${Math.round(finishPoints(p, N) * 10) / 10}</strong></td>`).join("")}
     </tr></tbody></table></div>
-    <p class="muted">Knockouts earn <strong>no points</strong>. The feed shows who
-    knocked out whom because it is worth seeing, not because it scores.</p>
 
     <h2 class="section">Why your score climbs during a game</h2>
     <p>A player still in the tournament is scored at the place they would take if
-    they busted on the very next hand — so as the field shrinks, every surviving
-    pick is worth more. Every survivor shows the <strong>same</strong> figure,
-    because they are all in the same position.</p>
+    they busted on the very next hand, so as the field shrinks every surviving pick
+    is worth more. Every survivor shows the <strong>same</strong> figure, because
+    they are all in the same position.</p>
     <p>Your <strong>projected total</strong> is higher than the sum of those
-    figures, and deliberately so: your survivors cannot all finish on the bubble.
-    If three of them went out back to back they would take three different places,
-    so the total credits them each a distinct one. Tap <span class="mathbtn">why?</span>
-    on any entry to see that arithmetic. It is a floor — picks can only finish
+    figures, and deliberately so. Your survivors cannot all finish in the same
+    place, so if they went out one after another they would take different places,
+    and the total credits them accordingly. Tap <span class="mathbtn">why?</span>
+    on any entry to see that spelled out. It is a floor: picks can only finish
     higher than the projection, never lower.</p>
 
     <h2 class="section">The season</h2>
-    <p>Winning a game is what counts, not running up a score. Each game pays
-    <strong>season points by placing</strong>:</p>
+    <p>There are two separate scores. The <strong>points</strong> in a game decide
+    who places where on that night, and nothing more. What carries into the season
+    is <strong>where you placed</strong>, which pays season points:</p>
     <div class="table-wrap"><table><thead><tr>
       <th>Place</th>${SEASON_POINTS.map((_, i) => `<th>${i + 1}${ordinal(i + 1)}</th>`).join("")}
       <th>${SEASON_POINTS.length + 1}${ordinal(SEASON_POINTS.length + 1)}+</th>
@@ -784,17 +806,20 @@ function renderRules() {
       <td>Season points</td>${SEASON_POINTS.map((v) => `<td><strong>${v}</strong></td>`).join("")}
       <td>0</td>
     </tr></tbody></table></div>
-    <p>So every game is worth at most <strong>${Math.max(...SEASON_POINTS)}</strong>,
-    whatever its size — a small Tuesday counts the same as a packed Saturday. The
-    season runs a month and the highest total wins. The top
-    <strong>${SEASON_POINTS.length}</strong> in each game are highlighted in the
-    standings, because those are the places that pay.</p>
+    <p>A game pays at most <strong>${Math.max(...SEASON_POINTS)}</strong> season
+    points no matter how big it was, so a quiet Tuesday counts the same as a packed
+    Wednesday. Scoring 400 points in one game and winning it earns the same
+    ${Math.max(...SEASON_POINTS)} as scoring 90 and winning it. The season runs a
+    month and the highest total wins. The top <strong>${SEASON_POINTS.length}</strong>
+    in each game are highlighted in the standings, because those are the places that
+    pay.</p>
 
-    <h2 class="section">Your name</h2>
-    <p>No password and no email. Your name is stored on the device you used, so
-    coming back to this page keeps your entries and your season points. A
-    different browser or device counts as a different player, and clearing your
-    browser data starts you over.</p>`;
+    <h2 class="section">Your account</h2>
+    <p>Your account is linked to this device, so your name, your entries and your
+    season points are waiting for you whenever you come back to this page. Names
+    are unique, so no two entrants can share one. Opening the page on another
+    browser or device creates a separate account, and clearing your browser data
+    starts a fresh one.</p>`;
 }
 
 // ---------------------------------------------------------------- finished
