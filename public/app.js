@@ -400,16 +400,18 @@ function renderClock() {
 function renderTournament() {
   const c = active();
   if (!c) return;
+  // Idempotent: openTournament() clears the synthetic entries, and the next
+  // socket event may be minutes away, so rebuild here as well.
+  if (TEST_MODE) buildLiveMocks();
   const t = c.tournament;
   const players = c.players;
-  $("#t-head").innerHTML = `
-    <h1 class="t-title">${esc(t?.title || t?.venue || `Tournament ${state.activeId}`)}</h1>
-    <div class="t-meta">
-      <span>${esc(t?.venue ?? "")}</span><span>TD ${esc(t?.td ?? "—")}</span>
-      <span><strong>${remaining(c)}</strong> of <strong>${players.length}</strong> left</span>
-      <span><strong>${allEntries().length}</strong> entries</span>
-      <span>max <strong>${players.length ? maxAchievable(players.length) : 0}</strong></span>
-    </div>`;
+  $("#t-head").innerHTML =
+    `<h1 class="t-title">${esc(t?.title || t?.venue || `Tournament ${state.activeId}`)}</h1>`;
+
+  $("#t-meta").innerHTML = `
+    <div class="left-big"><span class="n">${remaining(c)}</span>
+      <span class="of">of ${players.length} left</span></div>
+    <div class="td">TD ${esc(t?.td ?? "—")}</div>`;
 
   renderClock();
 
@@ -490,10 +492,11 @@ function renderStandingsTable(players) {
               : `<span class="muted">finished</span> <span class="place">#${p.finishedPlace}</span>`}</td>
             <td><strong>${p.currentPoints}</strong></td></tr>`).join("")}
           <tr class="sum"><td>Points now</td><td></td><td><strong>${r.score.currentTotal}</strong></td></tr>
-          ${r.score.projectionBonus > 0 ? `<tr class="sum"><td>Survival projection</td>
-            <td><button class="mathbtn" data-id="${r.entrantId}">why? ${state.math === r.entrantId ? "▾" : "▸"}</button></td>
-            <td><strong>+${r.score.projectionBonus}</strong></td></tr>` : ""}
-          <tr class="sum total"><td>Projected total</td><td></td><td><strong>${r.score.totalPoints}</strong></td></tr>
+          <tr class="sum total"><td>Projected total</td>
+            <td>${r.score.projectionBonus > 0
+              ? `<button class="mathbtn" data-id="${r.entrantId}">why? ${state.math === r.entrantId ? "▾" : "▸"}</button>`
+              : ""}</td>
+            <td><strong>${r.score.totalPoints}</strong></td></tr>
         </tbody></table>
         ${state.math === r.entrantId ? mathPanel(r.score) : ""}
       </td></tr>` : ""}

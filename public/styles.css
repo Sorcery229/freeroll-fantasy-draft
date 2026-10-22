@@ -248,3 +248,16 @@ td.season { color: var(--cyan-dim); font-weight: 700; }
 .mathpanel p { margin: 0 0 8px; }
 .mathpanel p:last-child { margin: 0; }
 .subtable tr.total td { color: var(--cyan); font-size: 16px; }
+
+/* survivors + TD, above the clock */
+.metabox {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 12px;
+}
+.metabox .left-big { display: flex; align-items: baseline; gap: 8px; }
+.metabox .left-big .n {
+  font-size: 40px; font-weight: 800; line-height: 1; color: var(--good);
+  text-shadow: 0 0 16px rgba(74,222,128,.4);
+}
+.metabox .left-big .of { font-size: 16px; color: var(--muted); }
+.metabox .td { font-size: 15px; color: var(--muted); }
