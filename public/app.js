@@ -27,7 +27,7 @@ import {
 import {
   firebaseConfig, FREEROLL_ORIGIN, FOLLOW_TOURNAMENT_IDS, TEST_MODE,
 } from "/config.js";
-import { SCORING, scoreEntry, isAlive, maxAchievable, seasonPointsForRank } from "/scoring.js";
+import { SCORING, scoreEntry, isAlive, seasonPointsForRank } from "/scoring.js";
 
 let app = null, auth = null, db = null;
 
