@@ -21,10 +21,11 @@ export const firebaseConfig = {
 // The live dashboard whose socket.io feed we read. No trailing slash.
 export const FREEROLL_ORIGIN = "https://openbarleague.com";
 
-// Tournament this page follows by default. `?t=<id>` overrides it, and if this
-// is null the app falls back to the Firestore config/active doc and then to the
-// demo field. Set it to tonight's tournament id to skip all of that.
-export const LIVE_TOURNAMENT_ID = 712;
+// Tournaments listed on the Active Tournaments page. `?t=<id>` overrides it.
+// Live-game discovery would need the dashboard's REST API, which sends no CORS
+// headers, so the ids are configured here and the socket supplies everything
+// else. Set this to tonight's tournament id(s).
+export const FOLLOW_TOURNAMENT_IDS = [712];
 
 // TEST MODE. While true the app:
 //   * lets you submit picks even after the clock has started,

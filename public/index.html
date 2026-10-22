@@ -8,8 +8,9 @@
 </head>
 <body>
 <header>
-  <h1>Fantasy Draft</h1>
+  <button id="brand" class="brand">Freeroll Fantasy</button>
   <nav>
+    <button data-view="home" class="tab">Tournaments</button>
     <button data-view="draft" class="tab">Make Picks</button>
     <button data-view="standings" class="tab">Standings</button>
     <button data-view="season" class="tab">Season</button>
@@ -19,11 +20,10 @@
 
 <div id="status" class="banner"></div>
 
-<!-- Demo-mode controls. Only shown with ?demo=1 -->
 <div id="demo-bar" class="banner" hidden>
-  <strong>Demo mode</strong> — 100 real league players, no live game.
-  <button id="demo-start" class="link">Start clock (lock picks)</button>
-  <button id="demo-bust" class="link">Bust next player</button>
+  <strong>Demo mode</strong> — mock field, no live game.
+  <button id="demo-start" class="link">Start clock</button>
+  <button id="demo-bust" class="link">Bust next</button>
   <button id="demo-bust10" class="link">Bust 10</button>
   <button id="demo-reset" class="link">Reset field</button>
   <span id="demo-state" class="muted"></span>
@@ -32,23 +32,58 @@
 <main>
   <!-- Name gate -->
   <section id="view-name" hidden>
-    <h2>What should we call you?</h2>
-    <p class="muted">
-      No password, no email. Your name is saved on this device, so next time you
-      open this page you will pick up where you left off and keep your season
-      points.
-    </p>
-    <form id="name-form">
-      <input id="name-input" type="text" maxlength="40" minlength="2"
-             placeholder="Your name or nickname" autocomplete="nickname" required />
-      <button type="submit">Start</button>
-    </form>
-    <p id="name-error" class="error"></p>
+    <div class="namecard">
+      <h1 class="big">What should we call you?</h1>
+      <p class="lead">
+        No password, no email. Your name is saved on this device, so next time
+        you open this page you pick up where you left off and keep your season
+        points.
+      </p>
+      <form id="name-form">
+        <input id="name-input" class="bigfield" type="text" maxlength="40"
+               minlength="2" placeholder="Your name or nickname"
+               autocomplete="nickname" required />
+        <button type="submit" class="bigbtn">Start</button>
+      </form>
+      <p id="name-error" class="error"></p>
+    </div>
   </section>
 
-  <!-- Draft -->
+  <!-- Active tournaments -->
+  <section id="view-home" hidden>
+    <div class="page-head">
+      <h1 class="glow">Active Tournaments</h1>
+      <p class="muted">Select a tournament to make picks and follow live standings</p>
+    </div>
+    <div id="home-cards" class="cards"></div>
+    <div id="home-empty" class="empty" hidden>
+      <div class="trophy">🏆</div>
+      <h2>No Active Tournaments</h2>
+      <p class="muted">Nothing is running right now. Check back when a game starts.</p>
+    </div>
+  </section>
+
+  <!-- One tournament: timer, knockouts, standings -->
+  <section id="view-standings" hidden>
+    <div id="t-head" class="page-head"></div>
+    <div id="t-timer" class="timer"></div>
+    <div id="t-stats" class="stats"></div>
+    <div class="split">
+      <div class="col-main">
+        <h2 class="section">Fantasy standings</h2>
+        <div id="standings-filter" class="filterbar"></div>
+        <div id="standings-table"></div>
+      </div>
+      <aside class="col-side">
+        <h2 class="section">Knockouts</h2>
+        <div id="ko-feed" class="feed"></div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- Picks -->
   <section id="view-draft" hidden>
-    <div id="draft-head"></div>
+    <div id="draft-head" class="page-head"></div>
     <div id="draft-locked" class="banner locked" hidden>
       <strong>Picks are closed.</strong>
       The tournament director has started the clock, so hands have been played.
@@ -56,39 +91,42 @@
     </div>
     <div id="draft-body">
       <div class="summary">
-        <span id="pick-count">Your picks: 0 / 5</span>
+        <span id="pick-count"></span>
         <button id="clear-picks" class="link">Clear</button>
       </div>
       <div id="chips" class="chips"></div>
-      <input id="pool-filter" type="text" placeholder="Filter by player name..." />
-      <div id="pool" class="pool"></div>
-      <button id="submit-picks" disabled>Submit my picks</button>
+      <div class="split">
+        <div class="col-main">
+          <input id="pool-filter" class="bigfield" type="text"
+                 placeholder="Filter by player name..." />
+          <div id="pool-count" class="muted"></div>
+          <div id="pool" class="pool"></div>
+        </div>
+        <aside class="col-side">
+          <h2 class="section">Players in the field</h2>
+          <div id="roster" class="feed"></div>
+        </aside>
+      </div>
+      <button id="submit-picks" class="bigbtn" disabled>Submit my picks</button>
       <p id="draft-error" class="error"></p>
     </div>
   </section>
 
-  <!-- Standings -->
-  <section id="view-standings" hidden>
-    <div id="standings-head"></div>
-    <div id="standings-stats" class="stats"></div>
-    <div id="standings-table"></div>
-  </section>
-
   <!-- Season -->
   <section id="view-season" hidden>
-    <h2>Season leaderboard</h2>
-    <p class="muted">Total fantasy points across every finished contest.</p>
+    <div class="page-head">
+      <h1 class="glow">Season leaderboard</h1>
+      <p class="muted">Total fantasy points across every finished contest.</p>
+    </div>
     <div id="season-table"></div>
   </section>
 </main>
 
 <footer>
   <button id="change-name" class="link">Change name</button>
-  <!-- Organiser-only. Hidden unless the URL carries ?setup=1 -->
   <button id="set-tournament" class="link" hidden>Set tournament</button>
 </footer>
 
-<!-- socket.io client provides the global `io` used by app.js -->
 <script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
 <script type="module" src="/app.js"></script>
 </body>
