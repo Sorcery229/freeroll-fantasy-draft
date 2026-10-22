@@ -19,7 +19,7 @@ export const SCORING = {
   //              Downside: it is linear, so 2nd (35) is barely behind 1st (36).
   // "curve"   -> top-heavy: maxFinishPoints * (fraction of field beaten)^gamma,
   //              which separates deep runs but needs explaining.
-  mode: "places",
+  mode: "curve",
   gamma: 3,
   maxFinishPoints: 100,
   // Knockouts award no points: the league only wants to see who knocked out
@@ -27,6 +27,26 @@ export const SCORING = {
   knockoutPoints: 0,
   picksRequired: 5,
 };
+
+/**
+ * SEASON points, awarded by an entrant's FINISHING RANK in a single game — not
+ * by their raw score. 1st in a game earns 10, 2nd 7, 3rd 6, down to 1 point for
+ * 8th; 9th and below earn nothing.
+ *
+ * This is what makes the two tiers work together: within a game, scoring can be
+ * as top-heavy as it likes (see SCORING.mode) because only the resulting
+ * ORDER matters here. Every game is therefore worth exactly the same to the
+ * season — a 12-player Tuesday cannot outweigh a 37-player Saturday — and a
+ * month of games is simply the sum of these.
+ */
+export const SEASON_POINTS = [10, 7, 6, 5, 4, 3, 2, 1];
+
+/** Season points for finishing `rank` (1-based) in one game. */
+export function seasonPointsForRank(rank) {
+  const r = Number(rank);
+  if (!Number.isFinite(r) || r < 1) return 0;
+  return SEASON_POINTS[r - 1] ?? 0;
+}
 
 const norm = (s) => String(s ?? "").trim().toLowerCase();
 

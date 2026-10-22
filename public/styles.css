@@ -196,3 +196,12 @@ button.link:hover { color: var(--cyan); }
 footer { position: fixed; bottom: 0; left: 0; right: 0; display: flex; gap: 10px;
          align-items: center; padding: 8px 16px; background: rgba(17,24,39,.95);
          border-top: 1px solid var(--line); font-size: 15px; }
+
+/* draft button + season points column */
+.draftbtn {
+  background: rgba(8,145,178,.2); border: 1px solid var(--line);
+  color: var(--cyan); padding: 6px 12px; border-radius: 8px;
+  font-size: 14px; font-weight: 600; cursor: pointer; white-space: nowrap;
+}
+.draftbtn:hover { border-color: var(--line-strong); background: rgba(8,145,178,.34); }
+td.season { color: var(--cyan-dim); font-weight: 700; }

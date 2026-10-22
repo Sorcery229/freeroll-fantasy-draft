@@ -27,7 +27,7 @@ import {
 import {
   firebaseConfig, FREEROLL_ORIGIN, FOLLOW_TOURNAMENT_IDS, TEST_MODE,
 } from "/config.js";
-import { SCORING, scoreEntry, isAlive, maxAchievable } from "/scoring.js";
+import { SCORING, scoreEntry, isAlive, maxAchievable, seasonPointsForRank } from "/scoring.js";
 
 let app = null, auth = null, db = null;
 
@@ -454,16 +454,19 @@ function renderStandingsTable(players) {
     rows = rows.filter((r) => String(r.name).toLowerCase().includes(f));
   }
   $("#standings-table").innerHTML = `<div class="table-wrap"><table>
-    <thead><tr><th>#</th><th>Entrant</th><th>Points</th><th>Alive</th><th>Best</th></tr></thead><tbody>
+    <thead><tr><th>#</th><th>Entrant</th><th>Points</th><th>Alive</th>
+    <th title="Season points this placing earns">Season</th><th>Draft</th></tr></thead><tbody>
     ${rows.map((r) => `
-      <tr class="entry ${r.entrantId === state.uid ? "me" : ""}" data-id="${r.entrantId}">
+      <tr class="${r.entrantId === state.uid ? "me" : ""}" data-id="${r.entrantId}">
         <td>${r.rank}</td>
-        <td><span class="caret">${state.expanded === r.entrantId ? "▾" : "▸"}</span> ${esc(r.name)}</td>
+        <td>${esc(r.name)}</td>
         <td><strong>${r.score.totalPoints}</strong></td>
         <td class="${r.score.picksAlive ? "alive-yes" : "alive-no"}">${r.score.picksAlive}/${SCORING.picksRequired}</td>
-        <td>${r.score.bestFinish ? "#" + r.score.bestFinish : "—"}</td>
+        <td class="season">${seasonPointsForRank(r.rank) || "—"}</td>
+        <td><button class="draftbtn" data-id="${r.entrantId}">${
+          state.expanded === r.entrantId ? "Hide ▾" : "View ▸"}</button></td>
       </tr>
-      ${state.expanded === r.entrantId ? `<tr class="detail"><td colspan="5">
+      ${state.expanded === r.entrantId ? `<tr class="detail"><td colspan="6">
         <div class="draft-title">${esc(r.name)}'s draft</div>
         <table class="subtable"><thead><tr><th>Pick</th><th>Player</th><th>Status</th><th>Points</th></tr></thead>
         <tbody>${[...r.score.picks].sort((a, b) => b.totalPoints - a.totalPoints)
@@ -477,9 +480,10 @@ function renderStandingsTable(players) {
           <tr class="sum"><td></td><td>Total</td><td></td><td><strong>${r.score.totalPoints}</strong></td></tr>
         </tbody></table></td></tr>` : ""}
     `).join("")}</tbody></table></div>`;
-  $("#standings-table").querySelectorAll("tr.entry").forEach((tr) =>
-    tr.addEventListener("click", () => {
-      state.expanded = state.expanded === tr.dataset.id ? null : tr.dataset.id;
+  $("#standings-table").querySelectorAll("button.draftbtn").forEach((b) =>
+    b.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      state.expanded = state.expanded === b.dataset.id ? null : b.dataset.id;
       renderStandingsTable(players);
     }));
 }
@@ -561,24 +565,33 @@ async function renderSeason() {
       let players = finalSnap.exists() ? (finalSnap.data().players ?? []) : null;
       if (!players && String(state.activeId) === c.id) players = active()?.players ?? [];
       if (!players || !players.length) continue;
-      for (const d of entriesSnap.docs) {
-        const e = d.data();
-        const s = scoreEntry(e.picks ?? [], players);
-        const prev = totals.get(d.id) ?? { name: e.name, points: 0, contests: 0 };
-        totals.set(d.id, {
-          name: e.name ?? prev.name,
-          points: Math.round((prev.points + s.totalPoints) * 10) / 10,
+      // Season points come from PLACING in the game, not from raw score, so
+      // every game is worth the same (max 10) no matter the field size.
+      const ranked = computeStandings(
+        players,
+        entriesSnap.docs.map((d) => ({ entrantId: d.id, ...d.data() }))
+      );
+      for (const row of ranked) {
+        const earned = seasonPointsForRank(row.rank);
+        const prev = totals.get(row.entrantId) ?? { name: row.name, points: 0, contests: 0, best: null };
+        totals.set(row.entrantId, {
+          name: row.name ?? prev.name,
+          points: prev.points + earned,
           contests: prev.contests + 1,
+          best: prev.best == null ? row.rank : Math.min(prev.best, row.rank),
         });
       }
     }
     const rows = [...totals.entries()].map(([id, v]) => ({ id, ...v }))
       .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name));
     node.innerHTML = rows.length
-      ? `<div class="table-wrap"><table><thead><tr><th>#</th><th>Entrant</th>
-         <th>Total Pts</th><th>Contests</th><th>Avg</th></tr></thead><tbody>
+      ? `<p class="muted">10 points for winning a game, then 7, 6, 5, 4, 3, 2, 1 down to
+         8th. Ninth and below score nothing, so every game is worth at most 10.</p>
+         <div class="table-wrap"><table><thead><tr><th>#</th><th>Entrant</th>
+         <th>Season Pts</th><th>Games</th><th>Best Finish</th><th>Avg</th></tr></thead><tbody>
          ${rows.map((r, i) => `<tr class="${r.id === state.uid ? "me" : ""}"><td>${i + 1}</td>
            <td>${esc(r.name)}</td><td><strong>${r.points}</strong></td><td>${r.contests}</td>
+           <td>${r.best ? "#" + r.best : "—"}</td>
            <td>${Math.round((r.points / r.contests) * 10) / 10}</td></tr>`).join("")}
          </tbody></table></div>`
       : `<p class="muted">No finished contests yet.</p>`;

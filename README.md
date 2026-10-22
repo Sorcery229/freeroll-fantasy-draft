@@ -36,35 +36,44 @@ one thing a separately-hosted page genuinely cannot do.
 
 ## Scoring
 
-Implemented in `public/scoring.js`, which is pure and dependency-free.
+Two tiers, in `public/scoring.js`.
 
-**Default mode: `places`.** A pick scores **the number of players it finished
-ahead of, plus one**. In a 36-player game the winner is worth 36, third is 34,
-and the first player out is worth 1. The best possible 5-pick entry in that
-field is 170. One sentence to explain, no exponents.
+### Within one game
 
-Knockouts award **no points** (`knockoutPoints: 0`). The league wants to see who
-knocked out whom, not to pay for it, so knockouts appear in the live feed and
-nowhere in the standings table.
+`SCORING.mode = "curve"`: a pick scores
+`maxFinishPoints * (fraction of the field it beat) ^ gamma`, with
+`maxFinishPoints = 100` and `gamma = 3`. In a 37-player field that is 1st = 100,
+2nd = 91.9, 3rd = 84.2, 5th = 70.2, 9th = 47.1, last = 0. Top-heavy, so a deep
+run actually pays, and field-size neutral, so the same percentile is worth the
+same in a 12-player game as a 37-player one.
+
+Knockouts award **no points** (`knockoutPoints: 0`) — the league wants to see
+who knocked out whom, not to pay for it. They appear in the live feed only.
 
 Players still in are scored at the place they would take if they busted on the
-next hand, i.e. the number still alive. In a 26-player game with 24 left a
-surviving pick is worth 3, and that climbs as the field thins.
+next hand, so live scores climb as the field thins.
 
-### The trade-off, stated plainly
+`mode: "places"` is the simpler alternative (points = players beaten + 1) and
+remains one constant away, but it is linear: 1st in a 37 field scores 37 against
+2nd's 36, so picking the actual winner is worth 3% more than picking the
+runner-up. That flatness is why `curve` is the default.
 
-`places` is linear, so 1st (36) sits just 3% above 2nd (35). Picking the actual
-winner is barely better than picking the runner-up, and entries get decided more
-by having five live bodies than by picking well.
+### Across the season
 
-The alternative lives in the same file: set `mode: "curve"` in `SCORING` and
-points become `maxFinishPoints * (fraction of field beaten) ^ gamma`. With
-`gamma: 3` in a 27-player field that gives 1st = 100, 3rd = 78.7, 5th = 60.6,
-9th = 33.2, 20th = 2.0 — deep runs pay properly, at the cost of needing a
-paragraph to explain. It is also field-size neutral, where `places`
-deliberately is not: a 36-player game is worth more than a 20-player one, which
-matches the difficulty but means someone who only plays big games accumulates
-more season points.
+Season points come from an entrant's **finishing rank in each game**, not their
+raw score:
+
+| Game rank | 1st | 2nd | 3rd | 4th | 5th | 6th | 7th | 8th | 9th+ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Season points | 10 | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
+
+`SEASON_POINTS = [10, 7, 6, 5, 4, 3, 2, 1]`.
+
+This is what makes the two tiers fit together. Because only the *order* within a
+game carries forward, the in-game curve can be as top-heavy as it likes without
+distorting the season, and **every game is worth exactly the same** — a
+12-player Tuesday cannot be outweighed by a 37-player Saturday. A month of eight
+games tops out at 80 points.
 
 ### Elimination order is not a finishing place
 
