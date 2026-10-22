@@ -59,7 +59,8 @@ const state = {
   tournamentId: null,
   tournament: null,   // { id, title, venue, td, game_started, status, ... }
   players: [],        // socket roster
-  entries: [],        // [{ entrantId, name, picks:[{id,name}] }]
+  entries: [],        // [{ entrantId, name, picks:[{id,name}] }] from Firestore
+  mockEntries: [],    // demo-only, page-local, never written to Firestore
   selected: [],       // ids chosen in the draft UI
   view: "standings",
   expanded: null,
@@ -182,6 +183,70 @@ $("#set-tournament").addEventListener("click", async () => {
 // path is tested; the lock is simulated locally and never mirrored, which keeps
 // the demo contest reusable. The season leaderboard skips it.
 const DEMO_ID = "demo";
+const DEMO_SEED = 20261021;      // fixed so the demo looks the same on every load
+const DEMO_ENTRIES = 12;         // synthetic predictions shown alongside yours
+const DEMO_PREBUSTED = 42;       // field already thinned, so it reads as mid-game
+
+/** mulberry32 — small deterministic PRNG so the demo is reproducible. */
+function rng(seed) {
+  let t = seed >>> 0;
+  return function () {
+    t += 0x6d2b79f5;
+    let x = Math.imul(t ^ (t >>> 15), 1 | t);
+    x ^= x + Math.imul(x ^ (x >>> 7), 61 | x);
+    return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Synthetic predictions. These live only in the page — they are never written
+ * to Firestore — so the demo standings look populated without inventing data in
+ * your database. Your own entry comes from Firestore and sits alongside them.
+ */
+function buildDemoEntries(players) {
+  const r = rng(DEMO_SEED);
+  const pool = [...players];
+  // Distinct entrant names: shuffle the pool deterministically and take from
+  // the front, so no two synthetic entrants share a name.
+  const names = pool.map((p) => p.nickname || p.name).filter(Boolean);
+  for (let i = names.length - 1; i > 0; i--) {
+    const j = Math.floor(r() * (i + 1));
+    [names[i], names[j]] = [names[j], names[i]];
+  }
+  const out = [];
+  for (let i = 0; i < DEMO_ENTRIES; i++) {
+    const picks = [];
+    const taken = new Set();
+    while (picks.length < 5) {
+      const p = pool[Math.floor(r() * pool.length)];
+      if (taken.has(p.id)) continue;
+      taken.add(p.id);
+      picks.push({ id: p.id, name: p.name });
+    }
+    out.push({
+      entrantId: `demo-entrant-${i}`,
+      name: names[i] ?? `Entrant ${i + 1}`,
+      picks,
+      demo: true,
+    });
+  }
+  return out;
+}
+
+/** Advance the demo field by n knockouts, deterministically. */
+function demoAdvance(n, r) {
+  for (let k = 0; k < n; k++) {
+    const alive = state.players.filter(isAlive);
+    if (alive.length <= 1) break;
+    const victim = alive[Math.floor(r() * alive.length)];
+    const others = alive.filter((p) => p.id !== victim.id);
+    const hitman = others[Math.floor(r() * others.length)];
+    victim.is_active = false;
+    victim.elimination_position = alive.length;
+    victim.placement = alive.length;
+    victim.hitman_name = hitman ? hitman.name : null;
+  }
+}
 
 async function bootDemo() {
   state.tournamentId = DEMO_ID;
@@ -191,6 +256,12 @@ async function bootDemo() {
   state.demoSeed = data;
   state.tournament = { ...data.tournament };
   state.players = data.players.map((p) => ({ ...p }));
+
+  // Present it as a game already under way: clock running, field thinned,
+  // predictions in. "Reopen picks" puts it back to a pre-start field.
+  state.mockEntries = buildDemoEntries(state.players);
+  state.tournament.game_started = true;
+  demoAdvance(DEMO_PREBUSTED, rng(DEMO_SEED + 1));
   // The rules require the contest doc to exist (with gameStarted false) before
   // entries may be written. Demo never flips it to true, so it stays reusable.
   try {
@@ -203,7 +274,7 @@ async function bootDemo() {
     setStatus(`Could not prepare the demo contest: ${e.message}`, "error");
   }
   $("#demo-bar").hidden = false;
-  showView("draft");
+  showView("standings");
   watchEntries();
   renderDemoState();
   render();
@@ -217,17 +288,7 @@ function renderDemoState() {
 }
 
 function demoBust(n = 1) {
-  for (let k = 0; k < n; k++) {
-    const alive = state.players.filter(isAlive);
-    if (alive.length <= 1) break;
-    const victim = alive[Math.floor(Math.random() * alive.length)];
-    const others = alive.filter((p) => p.id !== victim.id);
-    const hitman = others[Math.floor(Math.random() * others.length)];
-    victim.is_active = false;
-    victim.elimination_position = alive.length; // busting now takes this place
-    victim.placement = alive.length;
-    victim.hitman_name = hitman ? hitman.name : null;
-  }
+  demoAdvance(n, Math.random);
   renderDemoState();
   render();
 }
@@ -241,9 +302,11 @@ function wireDemo() {
   $("#demo-bust").addEventListener("click", () => demoBust(1));
   $("#demo-bust10").addEventListener("click", () => demoBust(10));
   $("#demo-reset").addEventListener("click", () => {
-    state.tournament = { ...state.demoSeed.tournament };
+    state.tournament = { ...state.demoSeed.tournament };   // game_started false
     state.players = state.demoSeed.players.map((p) => ({ ...p }));
+    state.selected = [];
     renderDemoState();
+    showView("draft");
     render();
   });
 }
@@ -261,8 +324,11 @@ async function boot() {
     id = cfg.exists() ? Number(cfg.data().tournamentId) : NaN;
   }
   if (isNaN(id)) {
-    showView("standings");
-    setStatus("No tournament is being followed yet. An organiser can point this page at tonight\u2019s game by opening it with ?setup=1 in the address bar.");
+    // Nothing configured yet: show the demo tournament rather than an empty
+    // page, so there is always something to look at on the main page.
+    wireDemo();
+    await bootDemo();
+    setStatus("Showing a demo tournament \u2014 no live game is configured yet. An organiser can point this page at a real game by opening it with ?setup=1.");
     return;
   }
   state.tournamentId = id;
@@ -467,6 +533,11 @@ function toggle(id) {
   renderDraft();
 }
 
+/** Firestore entries plus any page-local demo predictions. */
+function allEntries() {
+  return state.mockEntries.length ? [...state.entries, ...state.mockEntries] : state.entries;
+}
+
 function computeStandings(players, entries) {
   return entries
     .map((e) => ({ ...e, score: scoreEntry(e.picks ?? [], players) }))
@@ -487,17 +558,17 @@ function renderStandings() {
   $("#standings-stats").innerHTML = [
     ["Field", players.length],
     ["Still In", alive],
-    ["Entries", state.entries.length],
+    ["Entries", allEntries().length],
     ["Max Possible", players.length ? maxAchievable(players.length) : 0],
   ].map(([k, v]) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
 
-  if (!state.entries.length) {
+  if (!allEntries().length) {
     $("#standings-table").innerHTML = `<p class="muted">No entries yet.${
       state.tournament?.game_started ? "" : " Be the first to pick 5 players."}</p>`;
     return;
   }
 
-  const rows = computeStandings(players, state.entries);
+  const rows = computeStandings(players, allEntries());
   $("#standings-table").innerHTML = `<div class="table-wrap"><table>
     <thead><tr><th>#</th><th>Entrant</th><th>Fantasy Pts</th><th>Finish</th>
     <th>KO Pts</th><th>KOs</th><th>Alive</th><th>Best</th></tr></thead>
