@@ -13,6 +13,7 @@
     <button data-view="home" class="tab">Tournaments</button>
     <button data-view="draft" class="tab">Make Picks</button>
     <button data-view="standings" class="tab">Standings</button>
+    <button data-view="finished" class="tab">Finished</button>
     <button data-view="season" class="tab">Season</button>
   </nav>
   <div id="whoami"></div>
@@ -121,6 +122,15 @@
         </aside>
       </div>
     </div>
+  </section>
+
+  <!-- Finished contests -->
+  <section id="view-finished" hidden>
+    <div class="page-head">
+      <h1 class="glow">Finished contests</h1>
+      <p class="muted">Every completed game, its final fantasy standings and the season points it paid out.</p>
+    </div>
+    <div id="finished-list"></div>
   </section>
 
   <!-- Season -->

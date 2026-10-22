@@ -261,3 +261,19 @@ td.season { color: var(--cyan-dim); font-weight: 700; }
 }
 .metabox .left-big .of { font-size: 16px; color: var(--muted); }
 .metabox .td { font-size: 15px; color: var(--muted); }
+
+/* finished contests */
+.fcard {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  padding: 18px 20px; margin-bottom: 16px;
+}
+.fcard-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.fcard-title { font-size: 21px; font-weight: 600; color: var(--cyan); margin-bottom: 4px; }
+.fcard-body { display: grid; gap: 6px; margin: 14px 0 4px; }
+.fcard .table-wrap { margin-top: 14px; }
+.t-meta .tag {
+  background: rgba(251,191,36,.16); color: #fbbf24; border-radius: 999px;
+  padding: 1px 9px; font-size: 13px; font-weight: 600;
+}
+td.picksum { font-size: 13px; color: var(--muted); text-align: left; max-width: 420px; }
+td.picksum .place { color: var(--cyan-dim); }

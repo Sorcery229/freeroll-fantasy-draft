@@ -57,6 +57,7 @@ const state = {
   contestId: null,       // Firestore contest doc id
   entries: [], mockEntries: [],
   selected: [], expanded: null, math: null,
+  metaSaved: false, resultsFrozen: false, finishedOpen: null,
   sockets: {},
   filter: "", poolFilter: "",
   demo: false, demoSeed: null,
@@ -82,20 +83,21 @@ function active() { return state.activeId != null ? card(state.activeId) : null;
 // ---------------------------------------------------------------- views
 function showView(name) {
   state.view = name;
-  for (const v of ["name", "home", "draft", "standings", "season"]) {
+  for (const v of ["name", "home", "draft", "standings", "finished", "season"]) {
     const node = document.getElementById(`view-${v}`);
     if (node) node.hidden = v !== name;
   }
   document.querySelectorAll(".tab").forEach((t) =>
     t.setAttribute("aria-selected", String(t.dataset.view === name)));
   if (name === "season") renderSeason();
+  if (name === "finished") renderFinished();
   render();
 }
 
 document.querySelectorAll(".tab").forEach((t) =>
   t.addEventListener("click", () => {
     if (!state.name) return showView("name");
-    if (t.dataset.view !== "home" && t.dataset.view !== "season" && state.activeId == null) {
+    if (!["home", "season", "finished"].includes(t.dataset.view) && state.activeId == null) {
       return showView("home");
     }
     showView(t.dataset.view);
@@ -213,8 +215,64 @@ function withClientClock(t) {
 }
 
 function onData(id) {
-  if (TEST_MODE && id === state.activeId) buildLiveMocks();
+  if (id === state.activeId) {
+    if (TEST_MODE) buildLiveMocks();
+    saveContestMeta();
+    maybeFreezeResults();
+  }
   render();
+}
+
+/**
+ * Persist the tournament's identity on the contest doc, so the Finished tab can
+ * describe a game without needing a socket connection to it. Written once per
+ * session, after the tournament record first arrives.
+ */
+async function saveContestMeta() {
+  const c = active();
+  if (!c?.tournament || !state.contestId || state.metaSaved) return;
+  state.metaSaved = true;
+  const t = c.tournament;
+  try {
+    await setDoc(doc(db, "contests", String(state.contestId)), {
+      tournamentId: state.activeId,
+      title: t.title ?? null,
+      venue: t.venue ?? null,
+      td: t.td ?? null,
+      date: t.date ?? null,
+      fieldSize: c.players.length,
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+  } catch (e) { console.warn("contest meta:", e.message); }
+}
+
+/**
+ * Once a tournament is over, freeze the final roster under the contest. That is
+ * what lets the Finished and Season tabs rescore a past game with no live feed.
+ */
+async function maybeFreezeResults() {
+  const c = active();
+  const players = c?.players ?? [];
+  if (!players.length || state.resultsFrozen) return;
+  const alive = players.filter(isAlive).length;
+  const over = c.tournament?.status === "completed" || (alive <= 1 && players.length > 1);
+  if (!over) return;
+  state.resultsFrozen = true;
+  try {
+    await setDoc(doc(db, "contests", String(state.contestId), "results", "final"), {
+      fieldSize: players.length,
+      players: players.map((p) => ({
+        id: Number(p.id),
+        name: String(p.name),
+        nickname: p.nickname ?? null,
+        placement: p.placement ?? null,
+        elimination_position: p.elimination_position ?? null,
+        hitman_name: p.hitman_name ?? null,
+        is_active: isAlive(p),
+      })),
+      frozenAt: serverTimestamp(),
+    }, { merge: true });
+  } catch (e) { console.warn("freeze results:", e.message); }
 }
 
 function openTournament(id) {
@@ -222,6 +280,8 @@ function openTournament(id) {
   state.contestId = TEST_MODE ? `test-${id}` : String(id);
   state.mockEntries = [];
   state.entries = [];
+  state.metaSaved = false;
+  state.resultsFrozen = false;
   followTournament(id);
   prepareContest(id);
   watchEntries();
@@ -482,7 +542,6 @@ function renderStandingsTable(players) {
           state.expanded === r.entrantId ? "Hide ▾" : "View ▸"}</button></td>
       </tr>
       ${state.expanded === r.entrantId ? `<tr class="detail"><td colspan="6">
-        <div class="draft-title">${esc(r.name)}'s draft</div>
         <table class="subtable"><thead><tr><th>Player</th><th>Status</th><th>Points now</th></tr></thead>
         <tbody>${[...r.score.picks].sort((a, b) => b.currentPoints - a.currentPoints)
           .map((p) => `<tr class="${p.alive ? "" : "dim"}">
@@ -491,7 +550,6 @@ function renderStandingsTable(players) {
               ? `<span class="alive-yes">still in</span>`
               : `<span class="muted">finished</span> <span class="place">#${p.finishedPlace}</span>`}</td>
             <td><strong>${p.currentPoints}</strong></td></tr>`).join("")}
-          <tr class="sum"><td>Points now</td><td></td><td><strong>${r.score.currentTotal}</strong></td></tr>
           <tr class="sum total"><td>Projected total</td>
             <td>${r.score.projectionBonus > 0
               ? `<button class="mathbtn" data-id="${r.entrantId}">why? ${state.math === r.entrantId ? "▾" : "▸"}</button>`
@@ -622,6 +680,91 @@ function toggle(id) {
   if (i >= 0) state.selected.splice(i, 1);
   else if (state.selected.length < SCORING.picksRequired) state.selected.push(id);
   renderDraft();
+}
+
+// ---------------------------------------------------------------- finished
+/**
+ * Every contest that has a frozen final roster, with its full standings and the
+ * season points it paid out. Scored from `results/final`, so no socket needed.
+ */
+async function renderFinished() {
+  const node = $("#finished-list");
+  node.innerHTML = `<p class="muted">Loading…</p>`;
+  try {
+    const contests = await getDocs(collection(db, "contests"));
+    const done = [];
+    for (const c of contests.docs) {
+      if (c.id === DEMO_ID) continue;
+      const [entriesSnap, finalSnap] = await Promise.all([
+        getDocs(collection(db, "contests", c.id, "entries")),
+        getDoc(doc(db, "contests", c.id, "results", "final")),
+      ]);
+      if (!finalSnap.exists()) continue;
+      const players = finalSnap.data().players ?? [];
+      if (!players.length) continue;
+      const rows = computeStandings(
+        players,
+        entriesSnap.docs.map((d) => ({ entrantId: d.id, ...d.data() }))
+      );
+      done.push({ id: c.id, meta: c.data(), players, rows, frozenAt: finalSnap.data().frozenAt });
+    }
+
+    done.sort((a, b) => String(b.meta.date ?? "").localeCompare(String(a.meta.date ?? "")));
+
+    if (!done.length) {
+      node.innerHTML = `<p class="muted">No contests have finished yet. A contest is
+        archived automatically once its tournament is down to the last player.</p>`;
+      return;
+    }
+
+    node.innerHTML = done.map((d) => {
+      const m = d.meta;
+      const champ = d.players.find((p) => Number(p.placement) === 1)
+        ?? d.players.find((p) => Number(p.elimination_position) === d.players.length);
+      const open = state.finishedOpen === d.id;
+      return `<div class="fcard">
+        <div class="fcard-top">
+          <div>
+            <div class="fcard-title">${esc(m.title || m.venue || `Tournament ${m.tournamentId ?? d.id}`)}</div>
+            <div class="t-meta">
+              ${m.date ? `<span>${esc(fmtDate(m.date))}</span>` : ""}
+              ${m.venue ? `<span>${esc(m.venue)}</span>` : ""}
+              ${m.td ? `<span>TD ${esc(m.td)}</span>` : ""}
+              <span><strong>${d.players.length}</strong> players</span>
+              <span><strong>${d.rows.length}</strong> entries</span>
+              ${d.id.startsWith("test-") ? `<span class="tag">test</span>` : ""}
+            </div>
+          </div>
+          <button class="draftbtn" data-fid="${d.id}">${open ? "Hide ▾" : "Standings ▸"}</button>
+        </div>
+        <div class="fcard-body">
+          <div class="row"><span class="ico">🏆</span><span>Tournament won by
+            <strong>${esc(champ ? (champ.nickname || champ.name) : "—")}</strong></span></div>
+          <div class="row"><span class="ico">🥇</span><span>Fantasy winner
+            <strong>${esc(d.rows[0]?.name ?? "—")}</strong>
+            ${d.rows[0] ? `with <strong>${d.rows[0].score.totalPoints}</strong> points
+              for <strong>${seasonPointsForRank(1)}</strong> season points` : ""}</span></div>
+        </div>
+        ${open ? `<div class="table-wrap"><table>
+          <thead><tr><th>#</th><th>Entrant</th><th>Points</th><th>Picks in the money</th><th>Season</th></tr></thead>
+          <tbody>${d.rows.map((r) => `<tr class="${r.entrantId === state.uid ? "me" : ""}">
+            <td>${r.rank}</td><td>${esc(r.name)}</td>
+            <td><strong>${r.score.totalPoints}</strong></td>
+            <td class="picksum">${r.score.picks.map((p) =>
+              `${esc(p.name)} <span class="place">#${p.finishedPlace ?? "-"}</span>`).join(" · ")}</td>
+            <td class="season">${seasonPointsForRank(r.rank) || "—"}</td></tr>`).join("")}
+          </tbody></table></div>` : ""}
+      </div>`;
+    }).join("");
+
+    node.querySelectorAll("button[data-fid]").forEach((b) =>
+      b.addEventListener("click", () => {
+        state.finishedOpen = state.finishedOpen === b.dataset.fid ? null : b.dataset.fid;
+        renderFinished();
+      }));
+  } catch (e) {
+    node.innerHTML = `<p class="error">${esc(e.message)}</p>`;
+  }
 }
 
 // ---------------------------------------------------------------- season
