@@ -25,7 +25,7 @@ import {
   getFirestore, doc, getDoc, setDoc, collection, onSnapshot,
   getDocs, serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
-import { firebaseConfig, FREEROLL_ORIGIN } from "/config.js";
+import { firebaseConfig, FREEROLL_ORIGIN, LIVE_TOURNAMENT_ID, TEST_MODE } from "/config.js";
 import { SCORING, scoreEntry, isAlive, maxAchievable } from "/scoring.js";
 
 // ---------------------------------------------------------------- firebase
@@ -57,6 +57,7 @@ const state = {
   uid: null,
   name: null,
   tournamentId: null,
+  contestId: null,    // Firestore contest doc id (may differ in TEST_MODE)
   tournament: null,   // { id, title, venue, td, game_started, status, ... }
   players: [],        // socket roster
   entries: [],        // [{ entrantId, name, picks:[{id,name}] }] from Firestore
@@ -242,14 +243,17 @@ function demoAdvance(n, r) {
     const others = alive.filter((p) => p.id !== victim.id);
     const hitman = others[Math.floor(r() * others.length)];
     victim.is_active = false;
-    victim.elimination_position = alive.length;
-    victim.placement = alive.length;
+    // Match the live feed: elimination_position is bust order (1 = first out),
+    // and placement stays null until a game is integrated.
+    victim.elimination_position = state.players.length - alive.length + 1;
+    victim.placement = null;
     victim.hitman_name = hitman ? hitman.name : null;
   }
 }
 
 async function bootDemo() {
   state.tournamentId = DEMO_ID;
+  state.contestId = DEMO_ID;
   const res = await fetch("/demo.json", { cache: "no-store" });
   if (!res.ok) { setStatus("Could not load demo.json", "error"); return; }
   const data = await res.json();
@@ -312,27 +316,56 @@ function wireDemo() {
 }
 
 // ---------------------------------------------------------------- boot
+/** Firestore reads can hang rather than fail (private windows, blocked
+ *  WebChannel), so never let one block startup. */
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(null), ms)),
+  ]);
+}
+
 async function boot() {
   if (new URLSearchParams(location.search).has("demo")) {
     wireDemo();
     return bootDemo();
   }
+
+  // 1. ?t=<id>  2. LIVE_TOURNAMENT_ID from config.js  3. Firestore config/active
   const param = new URLSearchParams(location.search).get("t");
   let id = param ? parseInt(param, 10) : NaN;
+  if (isNaN(id) && Number.isFinite(LIVE_TOURNAMENT_ID)) id = Number(LIVE_TOURNAMENT_ID);
   if (isNaN(id)) {
-    const cfg = await getDoc(doc(db, "config", "active"));
-    id = cfg.exists() ? Number(cfg.data().tournamentId) : NaN;
+    const cfg = await withTimeout(getDoc(doc(db, "config", "active")), 4000);
+    if (cfg && cfg.exists()) id = Number(cfg.data().tournamentId);
   }
+
   if (isNaN(id)) {
-    // Nothing configured yet: show the demo tournament rather than an empty
-    // page, so there is always something to look at on the main page.
     wireDemo();
     await bootDemo();
-    setStatus("Showing a demo tournament \u2014 no live game is configured yet. An organiser can point this page at a real game by opening it with ?setup=1.");
+    setStatus("Showing a demo tournament \u2014 no live game is configured yet.");
     return;
   }
+
   state.tournamentId = id;
+  // In test mode picks go to a parallel contest so they are allowed even after
+  // the clock has started, and the real contest is left untouched.
+  state.contestId = TEST_MODE ? `test-${id}` : String(id);
   showView("standings");
+  render();
+
+  if (TEST_MODE) {
+    try {
+      await withTimeout(setDoc(
+        doc(db, "contests", state.contestId),
+        { tournamentId: id, gameStarted: false, title: `Test ${id}`, updatedAt: serverTimestamp() },
+        { merge: true }
+      ), 6000);
+    } catch (e) {
+      console.warn("test contest prepare:", e.message);
+    }
+  }
+
   watchEntries();
   connectSocket();
 }
@@ -365,8 +398,49 @@ function connectSocket() {
 
 function setPlayers(players) {
   state.players = players;
+  if (TEST_MODE) buildLiveMocks();
   render();
   maybeFreezeResults();
+}
+
+/**
+ * Test-mode only: invent predictions as if players in tonight's field had each
+ * picked 5 of their rivals before the clock started. Entrant names are real
+ * players from the live roster; picks are drawn from the same roster. These
+ * exist only in the page and are never written to Firestore. Seeded from the
+ * tournament id so the same game always produces the same predictions.
+ */
+function buildLiveMocks() {
+  if (state.mockEntries.length) return;          // build once
+  const roster = state.players;
+  if (roster.length < 8) return;                 // wait for a real field
+
+  const r = rng(Number(state.tournamentId) * 7919 + 13);
+  const labels = roster.map((p) => p.nickname || p.name).filter(Boolean);
+  for (let i = labels.length - 1; i > 0; i--) {
+    const j = Math.floor(r() * (i + 1));
+    [labels[i], labels[j]] = [labels[j], labels[i]];
+  }
+
+  const count = Math.min(12, Math.max(6, Math.floor(roster.length / 2)));
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const picks = [];
+    const taken = new Set();
+    while (picks.length < 5) {
+      const p = roster[Math.floor(r() * roster.length)];
+      if (taken.has(p.id)) continue;
+      taken.add(p.id);
+      picks.push({ id: p.id, name: p.name });
+    }
+    out.push({
+      entrantId: `mock-${state.tournamentId}-${i}`,
+      name: labels[i] ?? `Entrant ${i + 1}`,
+      picks,
+      demo: true,
+    });
+  }
+  state.mockEntries = out;
 }
 
 function setTournament(t) {
@@ -378,11 +452,12 @@ function setTournament(t) {
 // Mirror game_started into Firestore so the SECURITY RULES can refuse late
 // entries. Enforcement lives on Firestore's servers, not in this file.
 async function mirrorLock() {
+  if (TEST_MODE) return;   // test contest must stay open to writes
   if (!state.tournament || state.lockMirrored) return;
   const started = Boolean(state.tournament.game_started);
   try {
     await setDoc(
-      doc(db, "contests", String(state.tournamentId)),
+      doc(db, "contests", String(state.contestId)),
       {
         tournamentId: state.tournamentId,
         gameStarted: started,
@@ -401,6 +476,7 @@ async function mirrorLock() {
 // Once the tournament is over, freeze the final roster so the season
 // leaderboard can rescore past contests with no socket connection.
 async function maybeFreezeResults() {
+  if (TEST_MODE) return;
   const players = state.players;
   if (!players.length) return;
   const alive = players.filter(isAlive).length;
@@ -408,7 +484,7 @@ async function maybeFreezeResults() {
   if (!over) return;
   try {
     await setDoc(
-      doc(db, "contests", String(state.tournamentId), "results", "final"),
+      doc(db, "contests", String(state.contestId), "results", "final"),
       {
         fieldSize: players.length,
         players: players.map((p) => ({
@@ -430,7 +506,7 @@ async function maybeFreezeResults() {
 // ---------------------------------------------------------------- entries
 function watchEntries() {
   onSnapshot(
-    collection(db, "contests", String(state.tournamentId), "entries"),
+    collection(db, "contests", String(state.contestId), "entries"),
     (snap) => {
       state.entries = snap.docs.map((d) => ({ entrantId: d.id, ...d.data() }));
       const mine = state.entries.find((e) => e.entrantId === state.uid);
@@ -454,7 +530,7 @@ async function submitPicks() {
   }
   try {
     await setDoc(
-      doc(db, "contests", String(state.tournamentId), "entries", state.uid),
+      doc(db, "contests", String(state.contestId), "entries", state.uid),
       { name: state.name, picks, submittedAt: serverTimestamp() }
     );
     $("#draft-error").textContent = "";
@@ -488,7 +564,9 @@ function headline() {
 
 function renderDraft() {
   $("#draft-head").innerHTML = headline();
-  const locked = Boolean(state.tournament?.game_started);
+  // In test mode the clock does not close picks, so a live game can be used
+  // for a dry run after it has started.
+  const locked = !TEST_MODE && Boolean(state.tournament?.game_started);
   $("#draft-locked").hidden = !locked;
   $("#draft-body").hidden = locked;
   if (locked) return;

@@ -54,14 +54,28 @@ export function knockoutsByName(players) {
 }
 
 /**
- * Where a player currently sits for scoring. Busted players use their recorded
- * position; players still in are scored at the place they would take if they
- * busted on the next hand, i.e. the number still alive. That makes live scores
- * climb as the field shrinks.
+ * Where a player currently sits for scoring, as a FINISHING PLACE where 1 is
+ * the winner.
+ *
+ * Three cases, and the middle one is easy to get wrong:
+ *   * `placement` is the finishing place and is authoritative when present.
+ *     Live tournaments leave it null; it is filled in when the game is
+ *     integrated.
+ *   * `elimination_position` (ko_position in the database) is the ORDER OF
+ *     ELIMINATION — 1 means the first player knocked out, i.e. LAST place.
+ *     Verified against live tournament 712, where the first player out carried
+ *     elimination_position 1. It must therefore be inverted against the field
+ *     size, not used as a place directly.
+ *   * Players still in are scored at the place they would take if they busted
+ *     on the next hand, i.e. the number still alive, so live scores climb as
+ *     the field shrinks.
  */
-export function effectivePlace(p, playersAlive) {
+export function effectivePlace(p, playersAlive, fieldSize) {
   if (p.placement != null) return Number(p.placement);
-  if (p.elimination_position != null) return Number(p.elimination_position);
+  if (p.elimination_position != null) {
+    const n = Number(fieldSize) || 0;
+    return Math.max(1, n - Number(p.elimination_position) + 1);
+  }
   return Math.max(1, playersAlive);
 }
 
@@ -76,7 +90,7 @@ export function scoreEntry(picks, players, cfg = SCORING) {
   for (const pick of picks) {
     const p = byId.get(Number(pick.id));
     if (!p) continue;
-    const place = effectivePlace(p, playersAlive);
+    const place = effectivePlace(p, playersAlive, fieldSize);
     const fp = finishPoints(place, fieldSize, cfg);
     const koCount = kos.get(norm(p.name)) ?? 0;
     const kp = koCount * cfg.knockoutPoints;

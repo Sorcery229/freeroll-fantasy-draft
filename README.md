@@ -124,6 +124,45 @@ auth only, with no Cloud Functions. That is deliberate: Spark blocks outbound
 requests from Cloud Functions to non-Google hosts, which would have broken any
 design that proxied the Freeroll API.
 
+## Test mode against a live game
+
+`public/config.js` carries two settings that control this:
+
+```js
+export const LIVE_TOURNAMENT_ID = 712;  // tournament this page follows
+export const TEST_MODE = true;          // dry-run behaviour, see below
+```
+
+With `TEST_MODE = true` the app:
+
+- **lets you submit picks after the clock has started**, so a game already in
+  progress can be used for a dry run;
+- writes those picks to contest id **`test-<tournamentId>`**, never the real
+  contest, so nothing pollutes a genuine one;
+- **never mirrors `game_started`** to Firestore, keeping the test contest open;
+- **injects synthetic predictions attributed to real players in the field** —
+  entrant names are taken from the live roster and each picks 5 rivals, seeded
+  from the tournament id so the same game always yields the same predictions.
+  They live only in the page.
+
+Set `TEST_MODE = false` for a real contest, where picks must close the moment
+the TD starts the clock.
+
+`LIVE_TOURNAMENT_ID` is checked before the Firestore `config/active` document,
+so pointing the page at a game needs no database write. Set it to `null` to go
+back to `config/active`, and note that `?t=<id>` always overrides both.
+
+### A bug this testing caught
+
+The live feed exposes `elimination_position` (`ko_position` in the database),
+and it is the **order of elimination** — `1` means the first player knocked out,
+i.e. last place — not a finishing place. Verified on live tournament 712, where
+the first player out carried `elimination_position: 1`. The scorer originally
+treated it as a finishing place, which paid the first player eliminated a full
+100 points for "winning". `effectivePlace()` now inverts it against the field
+size. Finished games are unaffected because they carry `placement`, which is a
+true finishing place and takes precedence.
+
 ## Demo mode (testing with no live game)
 
 Open the site with `?demo=1`:
