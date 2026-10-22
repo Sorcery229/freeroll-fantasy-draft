@@ -107,27 +107,34 @@ form { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margi
 .empty .trophy { font-size: 60px; margin-bottom: 12px; }
 .empty h2 { font-size: 26px; margin: 0 0 6px; color: #d1d5db; }
 
-/* ---------- timer ---------- */
+/* ---------- compact tournament header ---------- */
+.t-head { margin-bottom: 16px; }
+.t-title {
+  font-size: 24px; margin: 0 0 4px; font-weight: 600; color: var(--cyan);
+  text-shadow: 0 0 8px rgba(6,182,212,.35);
+}
+.t-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; color: var(--muted); font-size: 15px; }
+.t-meta strong { color: var(--text); }
+.section-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 10px; }
+.section-row .section { margin: 0; }
+.section-row .filterbar { margin: 0; flex: 1; min-width: 220px; }
+.section-row .bigfield { padding: 9px 13px; font-size: 16px; max-width: 320px; }
+
+/* ---------- clock (de-emphasised, sits below standings) ---------- */
 .timer {
-  background: var(--surface); border: 1px solid var(--line); border-radius: 14px;
-  padding: 22px; margin-bottom: 20px; text-align: center; backdrop-filter: blur(4px);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 12px;
+  padding: 12px 18px; margin-top: 22px; display: flex; align-items: baseline;
+  gap: 18px; flex-wrap: wrap; justify-content: center;
 }
 .timer .clock {
-  font-size: 68px; font-weight: 700; line-height: 1; letter-spacing: 2px;
-  color: var(--good); text-shadow: 0 0 18px rgba(74,222,128,.35);
-  font-variant-numeric: tabular-nums;
+  font-size: 30px; font-weight: 700; line-height: 1; letter-spacing: 1px;
+  color: var(--good); font-variant-numeric: tabular-nums;
 }
-.timer .clock.paused { color: #fbbf24; text-shadow: 0 0 18px rgba(251,191,36,.35); }
-.timer .lvl { font-size: 20px; color: var(--cyan); margin-top: 8px; }
-.timer .blinds { font-size: 30px; font-weight: 700; color: var(--cyan-dim); margin-top: 6px;
+.timer .clock.paused { color: #fbbf24; }
+.timer .lvl { font-size: 16px; color: var(--cyan); }
+.timer .blinds { font-size: 18px; font-weight: 600; color: var(--cyan-dim);
                  font-variant-numeric: tabular-nums; }
-.timer .note { font-size: 15px; color: var(--muted); margin-top: 8px; }
-
-.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
-         background: var(--surface); border: 1px solid var(--line);
-         padding: 18px; border-radius: 12px; margin-bottom: 22px; text-align: center; }
-.stats .k { font-size: 14px; color: var(--muted); }
-.stats .v { font-size: 28px; font-weight: 700; }
+.timer .note { font-size: 14px; color: var(--muted); }
 
 /* ---------- split layout ---------- */
 .split { display: grid; grid-template-columns: minmax(0,1fr) 320px; gap: 22px; align-items: start; }
@@ -169,9 +176,16 @@ tbody tr { border-bottom: 1px solid rgba(6,182,212,.12); }
 tbody tr.entry { cursor: pointer; }
 tbody tr.entry:hover { background: rgba(255,255,255,.05); }
 tbody tr.me { background: rgba(8,145,178,.18); }
-.picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 9px; padding: 12px 0; }
-.pickcard { border: 1px solid rgba(6,182,212,.2); border-radius: 9px; padding: 10px; font-size: 14px; }
-.pickcard.alive { border-color: rgba(74,222,128,.45); background: rgba(74,222,128,.07); }
+tbody tr.detail > td { background: rgba(0,0,0,.28); padding: 14px 16px; }
+.draft-title { font-size: 16px; color: var(--cyan); margin-bottom: 8px; font-weight: 600; }
+.subtable { font-size: 15px; }
+.subtable th { font-size: 13px; color: var(--muted); padding: 6px 8px; }
+.subtable td { padding: 7px 8px; border-bottom: 1px solid rgba(6,182,212,.1); }
+.subtable th:nth-child(3), .subtable td:nth-child(3) { text-align: left; }
+.subtable tr.dim td { opacity: .62; }
+.subtable tr.sum td { border-bottom: 0; color: var(--cyan); padding-top: 10px; }
+.caret { color: var(--muted); font-size: 13px; }
+.place { color: var(--cyan-dim); font-weight: 700; }
 .alive-yes { color: var(--good); }
 .alive-no { color: var(--muted); }
 .table-wrap { overflow-x: auto; }

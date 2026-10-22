@@ -397,18 +397,17 @@ function renderTournament() {
   const c = active();
   if (!c) return;
   const t = c.tournament;
-  $("#t-head").innerHTML = `<h1 class="glow">${esc(t?.title || t?.venue || `Tournament ${state.activeId}`)}</h1>
-    <p class="muted">${esc(t?.venue ?? "")}${t?.td ? ` · TD: ${esc(t.td)}` : ""}</p>`;
+  const players = c.players;
+  $("#t-head").innerHTML = `
+    <h1 class="t-title">${esc(t?.title || t?.venue || `Tournament ${state.activeId}`)}</h1>
+    <div class="t-meta">
+      <span>${esc(t?.venue ?? "")}</span><span>TD ${esc(t?.td ?? "—")}</span>
+      <span><strong>${remaining(c)}</strong> of <strong>${players.length}</strong> left</span>
+      <span><strong>${allEntries().length}</strong> entries</span>
+      <span>max <strong>${players.length ? maxAchievable(players.length) : 0}</strong></span>
+    </div>`;
 
   renderClock();
-
-  const players = c.players;
-  $("#t-stats").innerHTML = [
-    ["Field", players.length],
-    ["Still In", remaining(c)],
-    ["Entries", allEntries().length],
-    ["Max Possible", players.length ? maxAchievable(players.length) : 0],
-  ].map(([k, v]) => `<div><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
 
   // Knockouts, most recent first.
   const out = players.filter((p) => !isAlive(p))
@@ -455,22 +454,28 @@ function renderStandingsTable(players) {
     rows = rows.filter((r) => String(r.name).toLowerCase().includes(f));
   }
   $("#standings-table").innerHTML = `<div class="table-wrap"><table>
-    <thead><tr><th>#</th><th>Entrant</th><th>Pts</th><th>Finish</th><th>KO Pts</th>
-    <th>KOs</th><th>Alive</th><th>Best</th></tr></thead><tbody>
+    <thead><tr><th>#</th><th>Entrant</th><th>Points</th><th>Alive</th><th>Best</th></tr></thead><tbody>
     ${rows.map((r) => `
       <tr class="entry ${r.entrantId === state.uid ? "me" : ""}" data-id="${r.entrantId}">
-        <td>${r.rank}</td><td>${esc(r.name)}</td>
+        <td>${r.rank}</td>
+        <td><span class="caret">${state.expanded === r.entrantId ? "▾" : "▸"}</span> ${esc(r.name)}</td>
         <td><strong>${r.score.totalPoints}</strong></td>
-        <td>${r.score.finishPoints}</td><td>${r.score.knockoutPoints}</td>
-        <td>${r.score.knockouts}</td>
         <td class="${r.score.picksAlive ? "alive-yes" : "alive-no"}">${r.score.picksAlive}/${SCORING.picksRequired}</td>
         <td>${r.score.bestFinish ? "#" + r.score.bestFinish : "—"}</td>
       </tr>
-      ${state.expanded === r.entrantId ? `<tr><td colspan="8"><div class="picks">${
-        r.score.picks.map((p) => `<div class="pickcard ${p.alive ? "alive" : ""}">
-          <div><strong>${esc(p.name)}</strong></div>
-          <div class="muted">${p.alive ? `still in (${p.effectivePlace} left)` : `finished #${p.effectivePlace}`}</div>
-          <div>${p.totalPoints} pts · ${p.knockouts} KO</div></div>`).join("")}</div></td></tr>` : ""}
+      ${state.expanded === r.entrantId ? `<tr class="detail"><td colspan="5">
+        <div class="draft-title">${esc(r.name)}'s draft</div>
+        <table class="subtable"><thead><tr><th>Pick</th><th>Player</th><th>Status</th><th>Points</th></tr></thead>
+        <tbody>${[...r.score.picks].sort((a, b) => b.totalPoints - a.totalPoints)
+          .map((p) => `<tr class="${p.alive ? "" : "dim"}">
+            <td>${p.pickOrder}</td>
+            <td>${esc(p.name)}</td>
+            <td>${p.alive
+              ? `<span class="alive-yes">still in</span> <span class="muted">(${p.effectivePlace}th if out now)</span>`
+              : `<span class="muted">finished</span> <span class="place">#${p.effectivePlace}</span>`}</td>
+            <td><strong>${p.totalPoints}</strong></td></tr>`).join("")}
+          <tr class="sum"><td></td><td>Total</td><td></td><td><strong>${r.score.totalPoints}</strong></td></tr>
+        </tbody></table></td></tr>` : ""}
     `).join("")}</tbody></table></div>`;
   $("#standings-table").querySelectorAll("tr.entry").forEach((tr) =>
     tr.addEventListener("click", () => {

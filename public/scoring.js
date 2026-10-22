@@ -13,9 +13,18 @@
 // unique_player_per_tournament constraint), so this is safe within a contest.
 
 export const SCORING = {
+  // "places"  -> points = players finished ahead of + 1. Winner of a 36-player
+  //              game scores 36, the first player out scores 1. Intuitive, and
+  //              a bigger field is worth more, which matches the difficulty.
+  //              Downside: it is linear, so 2nd (35) is barely behind 1st (36).
+  // "curve"   -> top-heavy: maxFinishPoints * (fraction of field beaten)^gamma,
+  //              which separates deep runs but needs explaining.
+  mode: "places",
   gamma: 3,
   maxFinishPoints: 100,
-  knockoutPoints: 2,
+  // Knockouts award no points: the league only wants to see who knocked out
+  // whom, not to pay for it.
+  knockoutPoints: 0,
   picksRequired: 5,
 };
 
@@ -36,9 +45,18 @@ export function isAlive(p) {
  * 1st instead of almost the same.
  */
 export function finishPoints(place, fieldSize, cfg = SCORING) {
-  if (fieldSize <= 1) return place === 1 ? cfg.maxFinishPoints : 0;
+  const N = Number(fieldSize) || 0;
   if (!place || place <= 0) return 0;
-  const beaten = (fieldSize - place) / (fieldSize - 1);
+
+  // "places": you score the number of players you finished ahead of, plus one.
+  // Winner of a 36-player game gets 36; the first player out gets 1.
+  if ((cfg.mode ?? "places") === "places") {
+    return N <= 0 ? 0 : Math.max(0, N - place + 1);
+  }
+
+  // "curve": field-size neutral and top-heavy.
+  if (N <= 1) return place === 1 ? cfg.maxFinishPoints : 0;
+  const beaten = (N - place) / (N - 1);
   const clamped = Math.min(1, Math.max(0, beaten));
   return cfg.maxFinishPoints * Math.pow(clamped, cfg.gamma);
 }

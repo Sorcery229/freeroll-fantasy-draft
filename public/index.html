@@ -63,15 +63,15 @@
     </div>
   </section>
 
-  <!-- One tournament: timer, knockouts, standings -->
+  <!-- One tournament: standings first, knockouts second, clock last -->
   <section id="view-standings" hidden>
-    <div id="t-head" class="page-head"></div>
-    <div id="t-timer" class="timer"></div>
-    <div id="t-stats" class="stats"></div>
+    <div id="t-head" class="t-head"></div>
     <div class="split">
       <div class="col-main">
-        <h2 class="section">Fantasy standings</h2>
-        <div id="standings-filter" class="filterbar"></div>
+        <div class="section-row">
+          <h2 class="section">Fantasy standings</h2>
+          <div id="standings-filter" class="filterbar"></div>
+        </div>
         <div id="standings-table"></div>
       </div>
       <aside class="col-side">
@@ -79,6 +79,7 @@
         <div id="ko-feed" class="feed"></div>
       </aside>
     </div>
+    <div id="t-timer" class="timer"></div>
   </section>
 
   <!-- Picks -->
