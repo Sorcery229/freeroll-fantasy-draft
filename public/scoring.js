@@ -120,18 +120,25 @@ export function effectivePlace(p, playersAlive, fieldSize) {
 /**
  * Score one entry (array of {id}) against the current roster.
  *
- * Surviving picks are credited with DISTINCT finishing places, counting back
- * from the current bubble. If 11 players remain and you hold 3 of them they
- * cannot all finish 11th — at worst they go out 11th, 10th and 9th. Crediting
- * each with 11th understates the entry, so places are assigned descending.
- * The sum does not depend on which pick takes which place, so this is a floor
- * on the entry's final score rather than a guess.
+ * Two numbers come out of this, and they differ on purpose:
+ *
+ *   currentPoints (per pick) — what that player is worth right now. Every
+ *     surviving pick gets the SAME figure, the value of the current bubble,
+ *     because they are all in identical situations. Busted picks get the value
+ *     of the place they actually finished.
+ *
+ *   totalPoints (the entry) — the projection. Survivors cannot all finish on
+ *     the bubble: if 8 players remain and you hold 3, the worst case is that
+ *     they go out 8th, 7th and 6th. So the total credits them DISTINCT places
+ *     counting back from the bubble, which makes it a floor on the final score
+ *     rather than a guess. The gap between the two is `projectionBonus`.
  */
 export function scoreEntry(picks, players, cfg = SCORING) {
   const byId = new Map(players.map((p) => [Number(p.id), p]));
   const fieldSize = players.length;
   const playersAlive = players.filter(isAlive).length;
   const kos = knockoutsByName(players);
+  const bubbleValue = finishPoints(Math.max(1, playersAlive), fieldSize, cfg);
 
   const resolved = [];
   for (const pick of picks) {
@@ -142,38 +149,47 @@ export function scoreEntry(picks, players, cfg = SCORING) {
   let nextAlivePlace = playersAlive;
   const scored = resolved.map((p) => {
     const alive = isAlive(p);
-    const place = alive
-      ? Math.max(1, nextAlivePlace--)
-      : effectivePlace(p, playersAlive, fieldSize);
-    const fp = finishPoints(place, fieldSize, cfg);
+    const finishedPlace = alive ? null : effectivePlace(p, playersAlive, fieldSize);
+    const projectedPlace = alive ? Math.max(1, nextAlivePlace--) : finishedPlace;
+    const currentPoints = alive ? bubbleValue : finishPoints(finishedPlace, fieldSize, cfg);
+    const projectedPoints = finishPoints(projectedPlace, fieldSize, cfg);
     const koCount = kos.get(norm(p.name)) ?? 0;
-    const kp = koCount * cfg.knockoutPoints;
     return {
       id: Number(p.id),
       name: p.nickname ? `${p.nickname} (${p.name})` : p.name,
       alive,
-      effectivePlace: place,
-      finishPoints: round1(fp),
+      finishedPlace,
+      effectivePlace: projectedPlace,
+      currentPoints: round1(currentPoints),
+      projectedPoints: round1(projectedPoints),
+      finishPoints: round1(projectedPoints),
       knockouts: koCount,
-      knockoutPoints: kp,
-      totalPoints: round1(fp + kp),
+      knockoutPoints: koCount * cfg.knockoutPoints,
+      totalPoints: round1(projectedPoints),
     };
   });
 
-  const finish = scored.reduce((s, x) => s + x.finishPoints, 0);
-  const ko = scored.reduce((s, x) => s + x.knockoutPoints, 0);
-  const done = scored.filter((x) => !x.alive).map((x) => x.effectivePlace);
+  const currentTotal = round1(scored.reduce((s, x) => s + x.currentPoints, 0));
+  const projected = round1(scored.reduce((s, x) => s + x.projectedPoints, 0));
+  const done = scored.filter((x) => !x.alive).map((x) => x.finishedPlace);
 
   return {
-    finishPoints: round1(finish),
-    knockoutPoints: ko,
-    totalPoints: round1(finish + ko),
+    bubbleValue: round1(bubbleValue),
+    playersAlive,
+    fieldSize,
+    currentTotal,
+    projectionBonus: round1(projected - currentTotal),
+    finishPoints: projected,
+    knockoutPoints: 0,
+    totalPoints: projected,
     knockouts: scored.reduce((s, x) => s + x.knockouts, 0),
     picksAlive: scored.filter((x) => x.alive).length,
     bestFinish: done.length ? Math.min(...done) : null,
     picks: scored,
   };
 }
+
+
 /** Best score reachable in a field of this size (picks finish 1..n). */
 export function maxAchievable(fieldSize, cfg = SCORING) {
   let total = 0;

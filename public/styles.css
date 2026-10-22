@@ -138,17 +138,22 @@ form { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margi
 
 /* ---------- split layout ---------- */
 .split { display: grid; grid-template-columns: minmax(0,1fr) 400px; gap: 24px; align-items: start; }
-@media (max-width: 1040px) { .split { grid-template-columns: 1fr; } .feed { max-height: 420px; } }
+@media (max-width: 1040px) { .split { grid-template-columns: 1fr; } }
 .col-side { background: var(--surface); border: 1px solid var(--line);
             border-radius: 12px; padding: 16px; }
-.feed { max-height: calc(100vh - 290px); overflow-y: auto; display: grid; gap: 4px; padding-right: 4px; }
+.feed { display: grid; gap: 5px; }
 .feed-item {
-  border: 1px solid rgba(6,182,212,.13); border-radius: 8px; padding: 6px 10px;
-  font-size: 15px; display: flex; align-items: baseline; gap: 8px;
+  border: 1px solid rgba(6,182,212,.13); border-radius: 8px; padding: 8px 11px;
+  font-size: 15px; display: grid; gap: 3px;
 }
-.feed-item .who { font-weight: 600; }
-.feed-item .by { color: var(--muted); font-size: 14px; margin-left: auto;
-                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+.feed-item .ko-main { display: flex; gap: 7px; flex-wrap: wrap; align-items: baseline; }
+.feed-item .who { font-weight: 600; color: #fca5a5; }
+.feed-item .by { color: var(--muted); font-size: 14px; }
+.feed-item .by .hit { color: var(--cyan-dim); font-weight: 600; }
+.feed-item .ko-meta { display: flex; gap: 10px; align-items: center; font-size: 13px; }
+.feed-item .when { color: var(--muted); }
+.feed-item .placetag { background: rgba(6,182,212,.14); border-radius: 999px;
+                       padding: 1px 9px; color: var(--cyan-dim); font-weight: 600; }
 .feed-item.out { opacity: .55; }
 .feed-item .place { color: var(--cyan-dim); font-weight: 700; }
 
@@ -229,3 +234,17 @@ td.season { color: var(--cyan-dim); font-weight: 700; }
 .submitted h3 { margin: 0 0 10px; font-size: 19px; color: var(--good); }
 .submitted ol { margin: 0; padding-left: 22px; font-size: 16px; }
 .submitted li { padding: 3px 0; }
+
+/* "why?" explanation of the projection */
+.mathbtn {
+  background: none; border: 1px solid rgba(6,182,212,.3); color: var(--cyan-dim);
+  border-radius: 7px; padding: 3px 9px; font-size: 13px; cursor: pointer;
+}
+.mathbtn:hover { border-color: var(--line-strong); }
+.mathpanel {
+  margin-top: 10px; border: 1px solid rgba(6,182,212,.25); border-radius: 10px;
+  padding: 12px 14px; background: rgba(8,145,178,.08); font-size: 15px;
+}
+.mathpanel p { margin: 0 0 8px; }
+.mathpanel p:last-child { margin: 0; }
+.subtable tr.total td { color: var(--cyan); font-size: 16px; }

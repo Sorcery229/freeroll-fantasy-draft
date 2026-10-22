@@ -56,7 +56,7 @@ const state = {
   activeId: null,        // tournament currently open
   contestId: null,       // Firestore contest doc id
   entries: [], mockEntries: [],
-  selected: [], expanded: null,
+  selected: [], expanded: null, math: null,
   sockets: {},
   filter: "", poolFilter: "",
   demo: false, demoSeed: null,
@@ -418,9 +418,18 @@ function renderTournament() {
     .sort((a, b) => (b.elimination_position ?? 0) - (a.elimination_position ?? 0));
   $("#ko-feed").innerHTML = out.length ? out.map((p) => {
     const place = players.length - (Number(p.elimination_position) || 0) + 1;
+    const when = timeAgo(p.knockedout_at ?? p.eliminated_at);
     return `<div class="feed-item out">
-      <div class="who">${esc(p.nickname || p.name)} <span class="place">#${place}</span></div>
-      ${p.hitman_name ? `<div class="by">knocked out by ${esc(p.hitman_name)}</div>` : ""}
+      <div class="ko-main">
+        <span class="who">${esc(p.nickname || p.name)}</span>
+        ${p.hitman_name
+          ? `<span class="by">KO'd by <span class="hit">${esc(p.hitman_name)}</span></span>`
+          : `<span class="by">KO'd</span>`}
+      </div>
+      <div class="ko-meta">
+        ${when ? `<span class="when">${esc(when)}</span>` : ""}
+        <span class="placetag">${place}${ordinal(place)} place</span>
+      </div>
     </div>`;
   }).join("") : `<p class="muted">Nobody out yet.</p>`;
 
@@ -472,23 +481,73 @@ function renderStandingsTable(players) {
       </tr>
       ${state.expanded === r.entrantId ? `<tr class="detail"><td colspan="6">
         <div class="draft-title">${esc(r.name)}'s draft</div>
-        <table class="subtable"><thead><tr><th>Player</th><th>Status</th><th>Points</th></tr></thead>
-        <tbody>${[...r.score.picks].sort((a, b) => b.totalPoints - a.totalPoints)
+        <table class="subtable"><thead><tr><th>Player</th><th>Status</th><th>Points now</th></tr></thead>
+        <tbody>${[...r.score.picks].sort((a, b) => b.currentPoints - a.currentPoints)
           .map((p) => `<tr class="${p.alive ? "" : "dim"}">
             <td>${esc(p.name)}</td>
             <td>${p.alive
               ? `<span class="alive-yes">still in</span>`
-              : `<span class="muted">finished</span> <span class="place">#${p.effectivePlace}</span>`}</td>
-            <td><strong>${p.totalPoints}</strong></td></tr>`).join("")}
-          <tr class="sum"><td>Total</td><td></td><td><strong>${r.score.totalPoints}</strong></td></tr>
-        </tbody></table></td></tr>` : ""}
-    `).join("")}</tbody></table></div>`;
+              : `<span class="muted">finished</span> <span class="place">#${p.finishedPlace}</span>`}</td>
+            <td><strong>${p.currentPoints}</strong></td></tr>`).join("")}
+          <tr class="sum"><td>Points now</td><td></td><td><strong>${r.score.currentTotal}</strong></td></tr>
+          ${r.score.projectionBonus > 0 ? `<tr class="sum"><td>Survival projection</td>
+            <td><button class="mathbtn" data-id="${r.entrantId}">why? ${state.math === r.entrantId ? "▾" : "▸"}</button></td>
+            <td><strong>+${r.score.projectionBonus}</strong></td></tr>` : ""}
+          <tr class="sum total"><td>Projected total</td><td></td><td><strong>${r.score.totalPoints}</strong></td></tr>
+        </tbody></table>
+        ${state.math === r.entrantId ? mathPanel(r.score) : ""}
+      </td></tr>` : ""}
+        `).join("")}</tbody></table></div>`;
+  $("#standings-table").querySelectorAll("button.mathbtn").forEach((b) =>
+    b.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      state.math = state.math === b.dataset.id ? null : b.dataset.id;
+      renderStandingsTable(players);
+    }));
   $("#standings-table").querySelectorAll("button.draftbtn").forEach((b) =>
     b.addEventListener("click", (ev) => {
       ev.stopPropagation();
       state.expanded = state.expanded === b.dataset.id ? null : b.dataset.id;
       renderStandingsTable(players);
     }));
+}
+
+/** Plain-language arithmetic behind the projected total. */
+function mathPanel(score) {
+  const alive = score.picks.filter((p) => p.alive);
+  if (!alive.length) return "";
+  const places = alive.map((p) => p.effectivePlace);
+  const vals = alive.map((p) => p.projectedPoints);
+  return `<div class="mathpanel">
+    <p><strong>${score.playersAlive} players left</strong>, so one more bust is
+    ${score.playersAlive}${ordinal(score.playersAlive)} place, worth
+    <strong>${score.bubbleValue}</strong>. That is what each of your
+    ${alive.length} surviving pick${alive.length > 1 ? "s is" : " is"} worth right now.</p>
+    <p>They cannot all finish there though. If they went out next, back to back,
+    they would take ${places.map((p) => `${p}${ordinal(p)}`).join(", ")} —
+    worth ${vals.join(" + ")} = <strong>${Math.round(vals.reduce((s, v) => s + v, 0) * 10) / 10}</strong>
+    instead of ${alive.length} × ${score.bubbleValue} =
+    <strong>${Math.round(alive.length * score.bubbleValue * 10) / 10}</strong>.</p>
+    <p class="muted">So the projection adds <strong>+${score.projectionBonus}</strong>. It is a
+    floor: your picks can only finish higher than that, never lower.</p>
+  </div>`;
+}
+
+/** "3m ago" / "1h 12m ago", matching the dashboard's knockout feed. */
+function timeAgo(ts) {
+  if (!ts) return "";
+  const then = new Date(ts).getTime();
+  if (!Number.isFinite(then)) return "";
+  const mins = Math.max(0, Math.floor((Date.now() - then) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return m ? `${h}h ${m}m ago` : `${h}h ago`;
+}
+
+function ordinal(n) {
+  const s = ["th", "st", "nd", "rd"], v = n % 100;
+  return s[(v - 20) % 10] || s[v] || s[0];
 }
 
 function renderDraft() {
