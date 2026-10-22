@@ -573,37 +573,32 @@ function renderStandingsTable(players) {
     }));
 }
 
-/** Plain-language arithmetic behind the projected total. */
+/** Compact arithmetic behind the projected total. */
 function mathPanel(score) {
   const alive = score.picks.filter((p) => p.alive);
   if (!alive.length) return "";
-  const places = alive.map((p) => p.effectivePlace);
-  const vals = alive.map((p) => p.projectedPoints);
+  const flat = Math.round(alive.length * score.bubbleValue * 10) / 10;
+  const chips = alive
+    .map((p) => `<span class="mchip">${p.effectivePlace}${ordinal(p.effectivePlace)}
+      <b>${p.projectedPoints}</b></span>`)
+    .join('<span class="mop">+</span>');
   return `<div class="mathpanel">
-    <p><strong>${score.playersAlive} players left</strong>, so one more bust is
-    ${score.playersAlive}${ordinal(score.playersAlive)} place, worth
-    <strong>${score.bubbleValue}</strong>. That is what each of your
-    ${alive.length} surviving pick${alive.length > 1 ? "s is" : " is"} worth right now.</p>
-    <p>They cannot all finish there though. If they went out next, back to back,
-    they would take ${places.map((p) => `${p}${ordinal(p)}`).join(", ")} —
-    worth ${vals.join(" + ")} = <strong>${Math.round(vals.reduce((s, v) => s + v, 0) * 10) / 10}</strong>
-    instead of ${alive.length} × ${score.bubbleValue} =
-    <strong>${Math.round(alive.length * score.bubbleValue * 10) / 10}</strong>.</p>
-    <p class="muted">So the projection adds <strong>+${score.projectionBonus}</strong>. It is a
-    floor: your picks can only finish higher than that, never lower.</p>
+    <div class="mline">
+      <span class="mkey">${score.playersAlive} left</span>
+      next bust is ${score.playersAlive}${ordinal(score.playersAlive)}, worth
+      <b>${score.bubbleValue}</b> each
+    </div>
+    <div class="mline">
+      <span class="mkey">worst case</span>
+      ${chips}<span class="mop">=</span><b class="mgood">${Math.round((flat + score.projectionBonus) * 10) / 10}</b>
+    </div>
+    <div class="mline">
+      <span class="mkey">not</span>
+      ${alive.length} × ${score.bubbleValue} = ${flat}
+      <span class="mop">→</span><b class="mgood">+${score.projectionBonus}</b>
+    </div>
+    <div class="mfoot">Your picks can only finish higher than this, never lower.</div>
   </div>`;
-}
-
-/** "3m ago" / "1h 12m ago", matching the dashboard's knockout feed. */
-function timeAgo(ts) {
-  if (!ts) return "";
-  const then = new Date(ts).getTime();
-  if (!Number.isFinite(then)) return "";
-  const mins = Math.max(0, Math.floor((Date.now() - then) / 60000));
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const h = Math.floor(mins / 60), m = mins % 60;
-  return m ? `${h}h ${m}m ago` : `${h}h ago`;
 }
 
 function ordinal(n) {

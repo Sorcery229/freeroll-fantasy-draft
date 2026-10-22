@@ -244,9 +244,21 @@ td.season { color: var(--cyan-dim); font-weight: 700; }
 .mathpanel {
   margin-top: 10px; border: 1px solid rgba(6,182,212,.25); border-radius: 10px;
   padding: 12px 14px; background: rgba(8,145,178,.08); font-size: 15px;
+  display: grid; gap: 8px;
 }
-.mathpanel p { margin: 0 0 8px; }
-.mathpanel p:last-child { margin: 0; }
+.mathpanel .mline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.mathpanel .mkey {
+  min-width: 86px; font-size: 12px; text-transform: uppercase; letter-spacing: .6px;
+  color: var(--muted);
+}
+.mathpanel .mchip {
+  background: rgba(6,182,212,.14); border-radius: 7px; padding: 2px 9px;
+  font-size: 14px; color: var(--muted);
+}
+.mathpanel .mchip b { color: var(--text); margin-left: 5px; }
+.mathpanel .mop { color: var(--muted); }
+.mathpanel .mgood { color: var(--good); }
+.mathpanel .mfoot { font-size: 13px; color: var(--muted); }
 .subtable tr.total td { color: var(--cyan); font-size: 16px; }
 
 /* survivors + TD, above the clock */
