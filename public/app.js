@@ -27,7 +27,8 @@ import {
 import {
   firebaseConfig, FREEROLL_ORIGIN, FOLLOW_TOURNAMENT_IDS, TEST_MODE,
 } from "/config.js";
-import { SCORING, scoreEntry, isAlive, seasonPointsForRank } from "/scoring.js";
+import { SCORING, SEASON_POINTS, scoreEntry, isAlive, finishPoints, seasonPointsForRank }
+  from "/scoring.js";
 
 let app = null, auth = null, db = null;
 
@@ -83,7 +84,7 @@ function active() { return state.activeId != null ? card(state.activeId) : null;
 // ---------------------------------------------------------------- views
 function showView(name) {
   state.view = name;
-  for (const v of ["name", "home", "draft", "standings", "finished", "season"]) {
+  for (const v of ["name", "home", "draft", "standings", "finished", "season", "rules"]) {
     const node = document.getElementById(`view-${v}`);
     if (node) node.hidden = v !== name;
   }
@@ -91,13 +92,14 @@ function showView(name) {
     t.setAttribute("aria-selected", String(t.dataset.view === name)));
   if (name === "season") renderSeason();
   if (name === "finished") renderFinished();
+  if (name === "rules") renderRules();
   render();
 }
 
 document.querySelectorAll(".tab").forEach((t) =>
   t.addEventListener("click", () => {
     if (!state.name) return showView("name");
-    if (!["home", "season", "finished"].includes(t.dataset.view) && state.activeId == null) {
+    if (!["home", "season", "finished", "rules"].includes(t.dataset.view) && state.activeId == null) {
       return showView("home");
     }
     showView(t.dataset.view);
@@ -386,6 +388,11 @@ function render() {
   if (state.view === "draft") renderDraft();
 }
 
+/** "Limerick Junction - 10/21/2026" -> "Limerick Junction" */
+function cleanTitle(s) {
+  return String(s ?? "").replace(/\s*[-–]\s*\d{1,2}\/\d{1,2}\/\d{2,4}\s*$/, "").trim();
+}
+
 function fmtDate(d) {
   if (!d) return "";
   const dt = new Date(d);
@@ -408,7 +415,7 @@ function renderHome() {
     const title = t?.title || t?.venue || `Tournament ${id}`;
     return `<button class="card" data-id="${id}">
       <div class="card-top">
-        <div class="card-title"><span>${esc(title)}</span><span>→</span></div>
+        <div class="card-title"><span>${esc(cleanTitle(title))}</span><span>→</span></div>
       </div>
       <div class="card-body">
         <div class="row"><span class="ico">🗓</span><span>${esc(fmtDate(t?.date))}${
@@ -466,7 +473,7 @@ function renderTournament() {
   const t = c.tournament;
   const players = c.players;
   $("#t-head").innerHTML =
-    `<h1 class="t-title">${esc(t?.title || t?.venue || `Tournament ${state.activeId}`)}</h1>`;
+    `<h1 class="t-title">${esc(cleanTitle(t?.title) || t?.venue || `Tournament ${state.activeId}`)}</h1>`;
 
   $("#t-meta").innerHTML = `
     <div class="left-big"><span class="n">${remaining(c)}</span>
@@ -529,19 +536,18 @@ function renderStandingsTable(players) {
     rows = rows.filter((r) => String(r.name).toLowerCase().includes(f));
   }
   $("#standings-table").innerHTML = `<div class="table-wrap"><table>
-    <thead><tr><th>#</th><th>Entrant</th><th>Points</th><th>Alive</th>
-    <th title="Season points this placing earns">Season</th><th>Draft</th></tr></thead><tbody>
+    <thead><tr><th>#</th><th>Entrant</th><th>Points</th><th>Alive</th><th>Draft</th></tr></thead><tbody>
     ${rows.map((r) => `
-      <tr class="${r.entrantId === state.uid ? "me" : ""}" data-id="${r.entrantId}">
+      <tr class="${r.entrantId === state.uid ? "me " : ""}${seasonPointsForRank(r.rank) ? "paid" : ""}${
+        r.rank === 8 ? " cutoff" : ""}" data-id="${r.entrantId}">
         <td>${r.rank}</td>
         <td>${esc(r.name)}</td>
         <td><strong>${r.score.totalPoints}</strong></td>
         <td class="${r.score.picksAlive ? "alive-yes" : "alive-no"}">${r.score.picksAlive}/${SCORING.picksRequired}</td>
-        <td class="season">${seasonPointsForRank(r.rank) || "—"}</td>
         <td><button class="draftbtn" data-id="${r.entrantId}">${
           state.expanded === r.entrantId ? "Hide ▾" : "View ▸"}</button></td>
       </tr>
-      ${state.expanded === r.entrantId ? `<tr class="detail"><td colspan="6">
+      ${state.expanded === r.entrantId ? `<tr class="detail"><td colspan="5">
         <table class="subtable"><thead><tr><th>Player</th><th>Status</th><th>Points now</th></tr></thead>
         <tbody>${[...r.score.picks].sort((a, b) => b.currentPoints - a.currentPoints)
           .map((p) => `<tr class="${p.alive ? "" : "dim"}">
@@ -611,7 +617,7 @@ function renderDraft() {
   if (!c) return;
   const t = c.tournament;
   $("#draft-head").innerHTML = `<h1 class="glow">Make your picks</h1>
-    <p class="muted">${esc(t?.title || t?.venue || "")} · pick ${SCORING.picksRequired} players</p>`;
+    <p class="muted">${esc(cleanTitle(t?.title) || t?.venue || "")} · pick ${SCORING.picksRequired} players</p>`;
 
   const locked = !TEST_MODE && Boolean(t?.game_started);
   $("#draft-locked").hidden = !locked;
@@ -677,6 +683,91 @@ function toggle(id) {
   renderDraft();
 }
 
+// ---------------------------------------------------------------- rules
+/**
+ * The explainer. Everything here is generated from the live constants in
+ * scoring.js, so it cannot drift away from what the app actually computes.
+ */
+function renderRules() {
+  const N = active()?.players?.length || 30;
+  const picks = SCORING.picksRequired;
+  const sample = [1, 2, 3, 5, Math.round(N / 3), Math.round(N / 2), N]
+    .filter((p, i, arr) => p >= 1 && p <= N && arr.indexOf(p) === i)
+    .sort((a, b) => a - b);
+
+  $("#rules-body").innerHTML = `
+    <h2 class="section">What this is</h2>
+    <p>A fantasy draft for Freeroll Atlanta tournaments. Before a game starts you
+    pick <strong>${picks} players</strong> from the field. As the tournament runs,
+    your picks earn points for how deep they go. The deeper they run, the more you
+    score.</p>
+    <p class="muted">The player data comes live from the Freeroll dashboard — the
+    same roster, knockouts and clock the tournament director is working from.</p>
+
+    <h2 class="section">Making picks</h2>
+    <ul>
+      <li>Pick exactly <strong>${picks}</strong> players from those still in the field.</li>
+      <li><strong>Anyone can pick the same player.</strong> There is no draft order
+      and nobody gets locked out of a popular name.</li>
+      <li><strong>Picks close when the TD starts the clock.</strong> Once cards are
+      in the air, nobody can enter — otherwise a late entrant would already know
+      who had busted.</li>
+      <li><strong>Picks are final.</strong> Once submitted they cannot be changed.</li>
+      <li>One entry per person per game.</li>
+    </ul>
+
+    <h2 class="section">How a pick scores</h2>
+    <p>A pick's points depend on <strong>what fraction of the field it beat</strong>,
+    not on raw place. That way a 12-player Tuesday and a 37-player Saturday are
+    scored on the same curve.</p>
+    <p class="formula">points = ${SCORING.maxFinishPoints} × (players beaten ÷ (field − 1))
+      <sup>${SCORING.gamma}</sup></p>
+    <p>The cube is what makes a deep run pay. Finishing in the top few is worth
+    far more than drifting out mid-pack. In a ${N}-player field:</p>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Finish</th>${sample.map((p) => `<th>${p}${ordinal(p)}</th>`).join("")}
+    </tr></thead><tbody><tr>
+      <td>Points</td>${sample.map((p) =>
+        `<td><strong>${Math.round(finishPoints(p, N) * 10) / 10}</strong></td>`).join("")}
+    </tr></tbody></table></div>
+    <p class="muted">Knockouts earn <strong>no points</strong>. The feed shows who
+    knocked out whom because it is worth seeing, not because it scores.</p>
+
+    <h2 class="section">Why your score climbs during a game</h2>
+    <p>A player still in the tournament is scored at the place they would take if
+    they busted on the very next hand — so as the field shrinks, every surviving
+    pick is worth more. Every survivor shows the <strong>same</strong> figure,
+    because they are all in the same position.</p>
+    <p>Your <strong>projected total</strong> is higher than the sum of those
+    figures, and deliberately so: your survivors cannot all finish on the bubble.
+    If three of them went out back to back they would take three different places,
+    so the total credits them each a distinct one. Tap <span class="mathbtn">why?</span>
+    on any entry to see that arithmetic. It is a floor — picks can only finish
+    higher than the projection, never lower.</p>
+
+    <h2 class="section">The season</h2>
+    <p>Winning a game is what counts, not running up a score. Each game pays
+    <strong>season points by placing</strong>:</p>
+    <div class="table-wrap"><table><thead><tr>
+      <th>Place</th>${SEASON_POINTS.map((_, i) => `<th>${i + 1}${ordinal(i + 1)}</th>`).join("")}
+      <th>${SEASON_POINTS.length + 1}${ordinal(SEASON_POINTS.length + 1)}+</th>
+    </tr></thead><tbody><tr>
+      <td>Season points</td>${SEASON_POINTS.map((v) => `<td><strong>${v}</strong></td>`).join("")}
+      <td>0</td>
+    </tr></tbody></table></div>
+    <p>So every game is worth at most <strong>${Math.max(...SEASON_POINTS)}</strong>,
+    whatever its size — a small Tuesday counts the same as a packed Saturday. The
+    season runs a month and the highest total wins. The top
+    <strong>${SEASON_POINTS.length}</strong> in each game are highlighted in the
+    standings, because those are the places that pay.</p>
+
+    <h2 class="section">Your name</h2>
+    <p>No password and no email. Your name is stored on the device you used, so
+    coming back to this page keeps your entries and your season points. A
+    different browser or device counts as a different player, and clearing your
+    browser data starts you over.</p>`;
+}
+
 // ---------------------------------------------------------------- finished
 /**
  * Every contest that has a frozen final roster, with its full standings and the
@@ -720,7 +811,7 @@ async function renderFinished() {
       return `<div class="fcard">
         <div class="fcard-top">
           <div>
-            <div class="fcard-title">${esc(m.title || m.venue || `Tournament ${m.tournamentId ?? d.id}`)}</div>
+            <div class="fcard-title">${esc(cleanTitle(m.title) || m.venue || `Tournament ${m.tournamentId ?? d.id}`)}</div>
             <div class="t-meta">
               ${m.date ? `<span>${esc(fmtDate(m.date))}</span>` : ""}
               ${m.venue ? `<span>${esc(m.venue)}</span>` : ""}

@@ -289,3 +289,23 @@ td.season { color: var(--cyan-dim); font-weight: 700; }
 }
 td.picksum { font-size: 13px; color: var(--muted); text-align: left; max-width: 420px; }
 td.picksum .place { color: var(--cyan-dim); }
+
+/* explainer */
+.prose { max-width: 820px; margin: 0 auto; }
+.prose h2.section { margin: 26px 0 10px; }
+.prose p { margin: 0 0 12px; }
+.prose ul { margin: 0 0 12px; padding-left: 22px; }
+.prose li { padding: 3px 0; }
+.prose .formula {
+  background: rgba(8,145,178,.12); border: 1px solid var(--line); border-radius: 10px;
+  padding: 12px 16px; font-size: 18px; color: var(--cyan); text-align: center;
+}
+.prose table { margin-bottom: 12px; }
+.prose th, .prose td { text-align: center; padding: 9px 8px; }
+.prose th:first-child, .prose td:first-child { text-align: left; color: var(--muted); }
+.prose .mathbtn { display: inline-block; }
+
+/* top 8 pay season points */
+tbody tr.paid td { background: rgba(74,222,128,.055); }
+tbody tr.paid td:first-child { box-shadow: inset 3px 0 0 var(--good); font-weight: 700; }
+tbody tr.cutoff td { border-bottom: 2px solid rgba(74,222,128,.45); }
