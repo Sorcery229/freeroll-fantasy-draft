@@ -36,26 +36,46 @@ one thing a separately-hosted page genuinely cannot do.
 
 ## Scoring
 
-`public/scoring.js`, identical maths to the dashboard branch:
+Implemented in `public/scoring.js`, which is pure and dependency-free.
 
-```
-finishPoints = 100 * ((N - place) / (N - 1)) ^ 3
-knockoutPoints = knockouts * 2
-```
+**Default mode: `places`.** A pick scores **the number of players it finished
+ahead of, plus one**. In a 36-player game the winner is worth 36, third is 34,
+and the first player out is worth 1. The best possible 5-pick entry in that
+field is 170. One sentence to explain, no exponents.
 
-In a 27-player field: 1st = 100, 3rd = 78.7, 5th = 60.6, 9th = 33.2,
-14th = 12.5, 20th = 2.0; the best possible 5-pick entry is 397.4. Because the
-base is the *fraction of the field beaten*, a 9-player game and a 27-player
-game produce comparable scores, which is what makes the season leaderboard
-meaningful.
+Knockouts award **no points** (`knockoutPoints: 0`). The league wants to see who
+knocked out whom, not to pay for it, so knockouts appear in the live feed and
+nowhere in the standings table.
 
 Players still in are scored at the place they would take if they busted on the
-next hand, so live scores climb as the field shrinks.
+next hand, i.e. the number still alive. In a 26-player game with 24 left a
+surviving pick is worth 3, and that climbs as the field thins.
 
-One difference from the dashboard version: the socket payload exposes
-`hitman_name` but not `hitman_uid`, so knockouts are credited by name match.
-Player names are unique within a tournament (`unique_player_per_tournament` in
-the database), so this is exact within a contest.
+### The trade-off, stated plainly
+
+`places` is linear, so 1st (36) sits just 3% above 2nd (35). Picking the actual
+winner is barely better than picking the runner-up, and entries get decided more
+by having five live bodies than by picking well.
+
+The alternative lives in the same file: set `mode: "curve"` in `SCORING` and
+points become `maxFinishPoints * (fraction of field beaten) ^ gamma`. With
+`gamma: 3` in a 27-player field that gives 1st = 100, 3rd = 78.7, 5th = 60.6,
+9th = 33.2, 20th = 2.0 — deep runs pay properly, at the cost of needing a
+paragraph to explain. It is also field-size neutral, where `places`
+deliberately is not: a 36-player game is worth more than a 20-player one, which
+matches the difficulty but means someone who only plays big games accumulates
+more season points.
+
+### Elimination order is not a finishing place
+
+The live feed exposes `elimination_position` (`ko_position` in the database) and
+it is the **order of elimination** — `1` means the first player knocked out,
+i.e. last place. Verified on live tournament 712, where the first player out
+carried `elimination_position: 1`. The scorer originally treated it as a
+finishing place, which paid the first player eliminated full marks for
+"winning". `effectivePlace()` now inverts it against the field size. Finished
+games are unaffected: they carry `placement`, a true finishing place, which
+takes precedence.
 
 ## Identity: name only, progress kept
 
