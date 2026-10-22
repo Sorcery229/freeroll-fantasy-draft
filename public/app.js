@@ -383,9 +383,16 @@ $("#pool-filter").addEventListener("input", (e) => { state.poolFilter = e.target
 
 // ---------------------------------------------------------------- render
 function render() {
-  if (state.view === "home") renderHome();
-  if (state.view === "standings") renderTournament();
-  if (state.view === "draft") renderDraft();
+  try {
+    if (state.view === "home") renderHome();
+    if (state.view === "standings") renderTournament();
+    if (state.view === "draft") renderDraft();
+  } catch (e) {
+    // Without this a mid-render throw leaves parts of the page frozen at
+    // whatever they last showed, with nothing on screen to say why.
+    console.error("render failed:", e);
+    setStatus(`Display error: ${e.message}`, "error");
+  }
 }
 
 /** "Limerick Junction - 10/21/2026" -> "Limerick Junction" */
@@ -605,6 +612,18 @@ function mathPanel(score) {
     </div>
     <div class="mfoot">Your picks can only finish higher than this, never lower.</div>
   </div>`;
+}
+
+/** "3m ago" / "1h 12m ago", matching the dashboard's knockout feed. */
+function timeAgo(ts) {
+  if (!ts) return "";
+  const then = new Date(ts).getTime();
+  if (!Number.isFinite(then)) return "";
+  const mins = Math.max(0, Math.floor((Date.now() - then) / 60000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return m ? `${h}h ${m}m ago` : `${h}h ago`;
 }
 
 function ordinal(n) {
