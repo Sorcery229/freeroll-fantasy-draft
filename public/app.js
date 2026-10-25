@@ -395,6 +395,69 @@ async function prepareContest(id) {
   } catch (e) { console.warn("contest prepare:", e.message); }
 }
 
+/**
+ * Archive a finished tournament that nobody was watching when it ended.
+ *
+ * Contests used to be frozen only by a client that happened to be on the page
+ * at the final knockout, so a game that ended unobserved never appeared under
+ * Finished. This fetches the final roster over the socket and writes it, which
+ * works for any past tournament because joinRoom serves its record whatever the
+ * status.
+ */
+function archiveContest(tournamentId, contestId) {
+  return new Promise((resolve) => {
+    const s = io(FREEROLL_ORIGIN, {
+      transports: ["websocket", "polling"],
+      withCredentials: false,
+      reconnection: false,
+    });
+    let players = null, tournament = null, settled = false;
+
+    const done = async (ok) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { s.close(); } catch (_) {}
+      if (!ok || !players?.length || !tournament) return resolve(false);
+      if (tournament.status === "in_progress") return resolve(false);
+      try {
+        await setDoc(doc(db, "contests", String(contestId), "results", "final"), {
+          fieldSize: players.length,
+          players: players.map((p) => ({
+            id: Number(p.id), name: String(p.name), nickname: p.nickname ?? null,
+            placement: p.placement ?? null,
+            elimination_position: p.elimination_position ?? null,
+            hitman_name: p.hitman_name ?? null,
+            is_active: Boolean(p.is_active),
+          })),
+          frozenAt: serverTimestamp(),
+        }, { merge: true });
+        await setDoc(doc(db, "contests", String(contestId)), {
+          tournamentId: Number(tournamentId),
+          title: tournament.title ?? null,
+          venue: tournament.venue ?? null,
+          td: tournament.td ?? null,
+          date: tournament.date ?? null,
+          fieldSize: players.length,
+        }, { merge: true });
+        resolve(true);
+      } catch (e) {
+        console.warn("archive failed:", e.message);
+        resolve(false);
+      }
+    };
+
+    const timer = setTimeout(() => done(false), 8000);
+    s.on("connect", () => s.emit("joinRoom", String(tournamentId)));
+    s.on("updatePlayers", (p) => { if (Array.isArray(p)) players = p; if (tournament) done(true); });
+    s.on("tournament:updated", (ev) => {
+      tournament = ev?.data?.tournament ?? null;
+      if (players) done(true);
+    });
+    s.on("connect_error", () => done(false));
+  });
+}
+
 // ---------------------------------------------------------------- entries
 function watchEntries() {
   if (!state.contestId) return;
@@ -909,31 +972,57 @@ function renderRules() {
  */
 async function renderFinished() {
   const node = $("#finished-list");
-  node.innerHTML = `<p class="muted">Loading…</p>`;
+  node.innerHTML = `<p class="muted">Loading\u2026</p>`;
   try {
-    const contests = await getDocs(collection(db, "contests"));
-    const done = [];
-    for (const c of contests.docs) {
-      if (c.id === DEMO_ID) continue;
+    const all = await withTimeout(getDocs(collection(db, "contests")), 8000);
+    if (!all) {
+      node.innerHTML = `<p class="error">Could not reach the database. Check your
+        connection and reload.</p>`;
+      return;
+    }
+    const docsList = all.docs.filter((c) => c.id !== DEMO_ID);
+    if (!docsList.length) {
+      node.innerHTML = `<p class="muted">No contests yet.</p>`;
+      return;
+    }
+
+    // Read every contest at once rather than one after another.
+    const loaded = await Promise.all(docsList.map(async (c) => {
       const [entriesSnap, finalSnap] = await Promise.all([
-        getDocs(collection(db, "contests", c.id, "entries")),
-        getDoc(doc(db, "contests", c.id, "results", "final")),
+        withTimeout(getDocs(collection(db, "contests", c.id, "entries")), 8000),
+        withTimeout(getDoc(doc(db, "contests", c.id, "results", "final")), 8000),
       ]);
-      if (!finalSnap.exists()) continue;
-      const players = finalSnap.data().players ?? [];
+      return { id: c.id, meta: c.data(), entriesSnap, finalSnap };
+    }));
+
+    // Any contest with entries but no frozen roster gets archived now.
+    const toArchive = loaded.filter((x) =>
+      x.entriesSnap?.size && !(x.finalSnap && x.finalSnap.exists()) && x.meta?.tournamentId != null);
+    if (toArchive.length) {
+      node.innerHTML = `<p class="muted">Archiving ${toArchive.length}
+        finished game${toArchive.length > 1 ? "s" : ""}\u2026</p>`;
+      const results = await Promise.all(
+        toArchive.map((x) => archiveContest(x.meta.tournamentId, x.id)));
+      if (results.some(Boolean)) return renderFinished();   // reload with the new archives
+    }
+
+    const done = [];
+    for (const x of loaded) {
+      if (!(x.finalSnap && x.finalSnap.exists())) continue;
+      const players = x.finalSnap.data().players ?? [];
       if (!players.length) continue;
       const rows = computeStandings(
         players,
-        entriesSnap.docs.map((d) => ({ entrantId: d.id, ...d.data() }))
+        (x.entriesSnap?.docs ?? []).map((d) => ({ entrantId: d.id, ...d.data() }))
       );
-      done.push({ id: c.id, meta: c.data(), players, rows, frozenAt: finalSnap.data().frozenAt });
+      done.push({ id: x.id, meta: x.meta, players, rows });
     }
 
-    done.sort((a, b) => String(b.meta.date ?? "").localeCompare(String(a.meta.date ?? "")));
+    done.sort((p, q) => String(q.meta.date ?? "").localeCompare(String(p.meta.date ?? "")));
 
     if (!done.length) {
-      node.innerHTML = `<p class="muted">No contests have finished yet. A contest is
-        archived automatically once its tournament is down to the last player.</p>`;
+      node.innerHTML = `<p class="muted">No finished contests with entries yet.
+        A game is archived once it has ended and someone opens this tab.</p>`;
       return;
     }
 
@@ -952,27 +1041,27 @@ async function renderFinished() {
               ${m.td ? `<span>TD ${esc(m.td)}</span>` : ""}
               <span><strong>${d.players.length}</strong> players</span>
               <span><strong>${d.rows.length}</strong> entries</span>
-              ${d.id.startsWith("test-") ? `<span class="tag">test</span>` : ""}
             </div>
           </div>
-          <button class="draftbtn" data-fid="${d.id}">${open ? "Hide ▾" : "Standings ▸"}</button>
+          <button class="draftbtn" data-fid="${d.id}">${open ? "Hide" : "Standings"}</button>
         </div>
         <div class="fcard-body">
-          <div class="row"><span class="ico">🏆</span><span>Tournament won by
-            <strong>${esc(champ ? (champ.nickname || champ.name) : "—")}</strong></span></div>
-          <div class="row"><span class="ico">🥇</span><span>Fantasy winner
-            <strong>${esc(d.rows[0]?.name ?? "—")}</strong>
-            ${d.rows[0] ? `with <strong>${d.rows[0].score.totalPoints}</strong> points
-              for <strong>${seasonPointsForRank(1)}</strong> season points` : ""}</span></div>
+          <div class="row"><span class="ico">&#127942;</span><span>Tournament won by
+            <strong>${esc(champ ? (champ.nickname || champ.name) : "?")}</strong></span></div>
+          ${d.rows[0] ? `<div class="row"><span class="ico">&#129351;</span><span>Fantasy winner
+            <strong>${esc(d.rows[0].name)}</strong> with
+            <strong>${d.rows[0].score.totalPoints}</strong> points for
+            <strong>${seasonPointsForRank(1)}</strong> season points</span></div>` : ""}
         </div>
         ${open ? `<div class="table-wrap"><table>
-          <thead><tr><th>#</th><th>Entrant</th><th>Points</th><th>Picks in the money</th><th>Season</th></tr></thead>
-          <tbody>${d.rows.map((r) => `<tr class="${r.entrantId === state.uid ? "me" : ""}">
+          <thead><tr><th>#</th><th>Entrant</th><th>Points</th><th>Their picks</th><th>Season</th></tr></thead>
+          <tbody>${d.rows.map((r) => `<tr class="${r.entrantId === state.uid ? "me " : ""}${
+            seasonPointsForRank(r.rank) ? "paid" : ""}">
             <td>${r.rank}</td><td>${esc(r.name)}</td>
             <td><strong>${r.score.totalPoints}</strong></td>
             <td class="picksum">${r.score.picks.map((p) =>
-              `${esc(p.name)} <span class="place">#${p.finishedPlace ?? "-"}</span>`).join(" · ")}</td>
-            <td class="season">${seasonPointsForRank(r.rank) || "—"}</td></tr>`).join("")}
+              `${esc(p.name)} <span class="place">#${p.finishedPlace ?? "?"}</span>`).join(" \u00b7 ")}</td>
+            <td class="season">${seasonPointsForRank(r.rank) || "0"}</td></tr>`).join("")}
           </tbody></table></div>` : ""}
       </div>`;
     }).join("");
@@ -990,29 +1079,45 @@ async function renderFinished() {
 // ---------------------------------------------------------------- season
 async function renderSeason() {
   const node = $("#season-table");
-  node.innerHTML = `<p class="muted">Loading…</p>`;
+  node.innerHTML = `<p class="muted">Loading\u2026</p>`;
   try {
-    const totals = new Map();
-    const contests = await getDocs(collection(db, "contests"));
-    for (const c of contests.docs) {
-      if (c.id === DEMO_ID || c.id.startsWith("test-")) continue;
+    const all = await withTimeout(getDocs(collection(db, "contests")), 8000);
+    if (!all) {
+      node.innerHTML = `<p class="error">Could not reach the database. Check your
+        connection and reload.</p>`;
+      return;
+    }
+
+    // Test contests count here too, otherwise the table is empty for the whole
+    // dry-run period. Only the demo field is excluded.
+    const docsList = all.docs.filter((c) => c.id !== DEMO_ID);
+    const loaded = await Promise.all(docsList.map(async (c) => {
       const [entriesSnap, finalSnap] = await Promise.all([
-        getDocs(collection(db, "contests", c.id, "entries")),
-        getDoc(doc(db, "contests", c.id, "results", "final")),
+        withTimeout(getDocs(collection(db, "contests", c.id, "entries")), 8000),
+        withTimeout(getDoc(doc(db, "contests", c.id, "results", "final")), 8000),
       ]);
-      if (!entriesSnap.size) continue;
-      let players = finalSnap.exists() ? (finalSnap.data().players ?? []) : null;
-      if (!players && String(state.activeId) === c.id) players = active()?.players ?? [];
+      return { id: c.id, entriesSnap, finalSnap };
+    }));
+
+    const totals = new Map();
+    let counted = 0;
+    for (const x of loaded) {
+      if (!x.entriesSnap?.size) continue;
+      let players = (x.finalSnap && x.finalSnap.exists()) ? (x.finalSnap.data().players ?? []) : null;
+      if (!players && String(state.contestId) === x.id) players = active()?.players ?? [];
       if (!players || !players.length) continue;
-      // Season points come from PLACING in the game, not from raw score, so
-      // every game is worth the same (max 10) no matter the field size.
+      counted++;
+
+      // Season points come from PLACING in the game, not the raw score, so
+      // every game is worth the same however big it was.
       const ranked = computeStandings(
         players,
-        entriesSnap.docs.map((d) => ({ entrantId: d.id, ...d.data() }))
+        x.entriesSnap.docs.map((d) => ({ entrantId: d.id, ...d.data() }))
       );
       for (const row of ranked) {
         const earned = seasonPointsForRank(row.rank);
-        const prev = totals.get(row.entrantId) ?? { name: row.name, points: 0, contests: 0, best: null };
+        const prev = totals.get(row.entrantId)
+          ?? { name: row.name, points: 0, contests: 0, best: null };
         totals.set(row.entrantId, {
           name: row.name ?? prev.name,
           points: prev.points + earned,
@@ -1021,19 +1126,27 @@ async function renderSeason() {
         });
       }
     }
+
     const rows = [...totals.entries()].map(([id, v]) => ({ id, ...v }))
-      .sort((a, b) => b.points - a.points || a.name.localeCompare(b.name));
+      .sort((p, q) => q.points - p.points || p.name.localeCompare(q.name));
+
     node.innerHTML = rows.length
-      ? `<p class="muted">10 points for winning a game, then 7, 6, 5, 4, 3, 2, 1 down to
-         8th. Ninth and below score nothing, so every game is worth at most 10.</p>
+      ? `<p class="muted">${SEASON_POINTS[0]} points for winning a game, then
+         ${SEASON_POINTS.slice(1).join(", ")} down to
+         ${SEASON_POINTS.length}${ordinal(SEASON_POINTS.length)}. Ninth and below
+         score nothing, so a game is worth at most ${SEASON_POINTS[0]}.
+         Counting ${counted} game${counted === 1 ? "" : "s"}.</p>
          <div class="table-wrap"><table><thead><tr><th>#</th><th>Entrant</th>
          <th>Season Pts</th><th>Games</th><th>Best Finish</th><th>Avg</th></tr></thead><tbody>
-         ${rows.map((r, i) => `<tr class="${r.id === state.uid ? "me" : ""}"><td>${i + 1}</td>
+         ${rows.map((r, i) => `<tr class="${r.id === state.uid ? "me " : ""}${
+           i < SEASON_POINTS.length ? "paid" : ""}"><td>${i + 1}</td>
            <td>${esc(r.name)}</td><td><strong>${r.points}</strong></td><td>${r.contests}</td>
-           <td>${r.best ? "#" + r.best : "—"}</td>
+           <td>${r.best ? "#" + r.best : "0"}</td>
            <td>${Math.round((r.points / r.contests) * 10) / 10}</td></tr>`).join("")}
          </tbody></table></div>`
-      : `<p class="muted">No finished contests yet.</p>`;
+      : `<p class="muted">Nothing to show yet. A game counts towards the season
+         once it has finished and been archived, which happens when someone opens
+         the Finished tab after it ends.</p>`;
   } catch (e) {
     node.innerHTML = `<p class="error">${esc(e.message)}</p>`;
   }
