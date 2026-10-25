@@ -913,7 +913,7 @@ function renderRules() {
 
     <h2 class="section">How a pick scores</h2>
     <p>A pick's points depend on <strong>what fraction of the field it beat</strong>,
-    not on raw place. That way a 12 player Tuesday and a 37 player Wednesday are
+    not on raw place. That way a 12 player Tuesday and a 60 player Wednesday are
     scored on the same curve.</p>
     <p class="formula">points = ${SCORING.maxFinishPoints} × (players beaten ÷ (field − 1))
       <sup>${SCORING.gamma}</sup></p>
@@ -931,17 +931,18 @@ function renderRules() {
     they busted on the very next hand, so as the field shrinks every surviving pick
     is worth more. Every survivor shows the <strong>same</strong> figure, because
     they are all in the same position.</p>
-    <p>Your <strong>projected total</strong> is higher than the sum of those
-    figures, and deliberately so. Your survivors cannot all finish in the same
-    place, so if they went out one after another they would take different places,
-    and the total credits them accordingly. Tap <span class="mathbtn">why?</span>
-    on any entry to see that spelled out. It is a floor: picks can only finish
-    higher than the projection, never lower.</p>
+    <p>Your <strong>projected total</strong> exceeds the sum of those figures.
+    Survivors cannot all finish in the same place, so if they were eliminated one
+    after another they would occupy different places, and the total credits them
+    accordingly. Select <span class="mathbtn">why?</span> on any entry for the
+    full calculation. The projection is a floor: picks can finish higher than it,
+    never lower.</p>
 
     <h2 class="section">The season</h2>
-    <p>There are two separate scores. The <strong>points</strong> in a game decide
-    who places where on that night, and nothing more. What carries into the season
-    is <strong>where you placed</strong>, which pays season points:</p>
+    <p>Two separate scores are kept. The <strong>points</strong> earned in a game
+    determine the order of that night's standings and nothing further. Only your
+    <strong>finishing position</strong> carries into the season, and it is
+    rewarded according to the following schedule:</p>
     <div class="table-wrap"><table><thead><tr>
       <th>Place</th>${SEASON_POINTS.map((_, i) => `<th>${i + 1}${ordinal(i + 1)}</th>`).join("")}
       <th>${SEASON_POINTS.length + 1}${ordinal(SEASON_POINTS.length + 1)}+</th>
@@ -949,20 +950,19 @@ function renderRules() {
       <td>Season points</td>${SEASON_POINTS.map((v) => `<td><strong>${v}</strong></td>`).join("")}
       <td>0</td>
     </tr></tbody></table></div>
-    <p>A game pays at most <strong>${Math.max(...SEASON_POINTS)}</strong> season
-    points no matter how big it was, so a quiet Tuesday counts the same as a packed
-    Wednesday. Scoring 400 points in one game and winning it earns the same
-    ${Math.max(...SEASON_POINTS)} as scoring 90 and winning it. The season runs a
-    month and the highest total wins. The top <strong>${SEASON_POINTS.length}</strong>
-    in each game are highlighted in the standings, because those are the places that
-    pay.</p>
+    <p>A game awards at most <strong>${Math.max(...SEASON_POINTS)}</strong> season
+    points regardless of its size. Scoring 400 points in a game and winning it
+    earns the same ${Math.max(...SEASON_POINTS)} as scoring 90 and winning it. The
+    season runs for one month and the highest total wins. The top
+    <strong>${SEASON_POINTS.length}</strong> positions in each game are highlighted
+    in the standings.</p>
 
     <h2 class="section">Your account</h2>
-    <p>Your account is linked to this device, so your name, your entries and your
-    season points are waiting for you whenever you come back to this page. Names
-    are unique, so no two entrants can share one. Opening the page on another
-    browser or device creates a separate account, and clearing your browser data
-    starts a fresh one.</p>`;
+    <p>Your account is linked to this device. Your name, entries and season points
+    are retained and restored each time you return to this page. Names must be
+    unique, so no two entrants may share one. Opening the page on another browser
+    or device creates a separate account, and clearing your browser data
+    establishes a new one.</p>`;
 }
 
 // ---------------------------------------------------------------- finished
