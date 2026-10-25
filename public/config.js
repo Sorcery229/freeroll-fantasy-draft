@@ -21,11 +21,12 @@ export const firebaseConfig = {
 // The live dashboard whose socket.io feed we read. No trailing slash.
 export const FREEROLL_ORIGIN = "https://openbarleague.com";
 
-// Tournaments listed on the Active Tournaments page. `?t=<id>` overrides it.
-// Live-game discovery would need the dashboard's REST API, which sends no CORS
-// headers, so the ids are configured here and the socket supplies everything
-// else. Set this to tonight's tournament id(s).
-export const FOLLOW_TOURNAMENT_IDS = [712];
+// SEED only. The app discovers live tournaments by itself: it probes a window
+// of ids over the socket and keeps whichever report status "in_progress",
+// remembering the newest id it has seen so later visits start from there. This
+// list just gives it a starting point on a browser that has never run it, and
+// `?t=<id>` still overrides everything.
+export const FOLLOW_TOURNAMENT_IDS = [717];
 
 // TEST MODE. While true the app:
 //   * lets you submit picks even after the clock has started,

@@ -59,6 +59,7 @@ const state = {
   entries: [], mockEntries: [],
   selected: [], expanded: new Set(), math: new Set(),
   metaSaved: false, resultsFrozen: false, finishedOpen: null, showLeft: false,
+  rediscover: null,
   sockets: {},
   filter: "", poolFilter: "",
   demo: false, demoSeed: null,
@@ -181,20 +182,99 @@ async function boot() {
 
   const param = new URLSearchParams(location.search).get("t");
   const fromUrl = param ? param.split(",").map((x) => parseInt(x, 10)).filter((n) => !isNaN(n)) : [];
-  const configured = (Array.isArray(FOLLOW_TOURNAMENT_IDS) ? FOLLOW_TOURNAMENT_IDS : [])
-    .map(Number).filter((n) => Number.isFinite(n));
-  state.follow = fromUrl.length ? fromUrl : configured;
+  const seeds = (Array.isArray(FOLLOW_TOURNAMENT_IDS) ? FOLLOW_TOURNAMENT_IDS : [])
+    .map(Number).filter(Number.isFinite);
 
-  if (!state.follow.length) {
-    const cfg = await withTimeout(getDoc(doc(db, "config", "active")), 4000);
-    if (cfg && cfg.exists()) state.follow = [Number(cfg.data().tournamentId)];
+  if (fromUrl.length) {
+    state.follow = fromUrl;
+  } else {
+    setStatus("Looking for tournaments\u2026");
+    state.follow = await discoverLive(seeds);
+    setStatus("");
   }
-
-  if (!state.follow.length) { setStatus("No tournaments configured."); return showView("home"); }
 
   showView("home");
   for (const id of state.follow) followTournament(id);
   if (state.follow.length === 1) openTournament(state.follow[0]);
+
+  if (!fromUrl.length && !state.rediscover) {
+    state.rediscover = setInterval(refreshLive, 120000);
+  }
+}
+
+/** Re-run discovery so a game that starts later shows up on its own. */
+async function refreshLive() {
+  const live = await discoverLive(state.follow.length ? state.follow : []);
+  const added = live.filter((id) => !state.follow.includes(id));
+  const ended = state.follow.filter((id) => !live.includes(id));
+  if (!added.length && !ended.length) return;
+
+  state.follow = live;
+  for (const id of added) followTournament(id);
+
+  if (state.activeId != null && ended.includes(state.activeId)) {
+    if (live.length) openTournament(live[0]);
+    else { state.activeId = null; showView("home"); }
+  }
+  render();
+}
+
+// ---------------------------------------------------------------- discovery
+/**
+ * Find which tournaments are running right now.
+ *
+ * The dashboard's REST list of active games sends no CORS headers, so a browser
+ * cannot read it. The socket can: joining a room returns that tournament's
+ * record whatever its id, and a finished game reports `status: "integrated"`
+ * rather than `in_progress`. So we join a bounded window of ids on one
+ * throwaway socket, keep whichever come back in progress, drop it, then open a
+ * real socket per live game.
+ *
+ * Tournament ids increment, so the window only has to reach a little past the
+ * newest id we have ever seen, which is remembered between visits.
+ */
+const SEEN_KEY = "freeroll-fantasy:newest-tournament";
+
+function discoverLive(seedIds) {
+  const remembered = Number(localStorage.getItem(SEEN_KEY) || 0);
+  const base = Math.max(remembered, ...seedIds.map(Number), 0);
+  if (!base) return Promise.resolve([]);
+
+  const ids = [];
+  for (let id = base - 2; id <= base + 14; id++) if (id > 0) ids.push(id);
+
+  return new Promise((resolve) => {
+    const found = new Map();
+    const probe = io(FREEROLL_ORIGIN, {
+      transports: ["websocket", "polling"],
+      withCredentials: false,
+      reconnection: false,
+    });
+
+    const finish = () => {
+      try { probe.close(); } catch (_) {}
+      const live = [...found.entries()]
+        .filter(([, t]) => t.status === "in_progress")
+        .map(([id]) => id)
+        .sort((x, y) => y - x);
+      const newest = Math.max(base, ...found.keys());
+      if (Number.isFinite(newest) && newest > remembered) {
+        localStorage.setItem(SEEN_KEY, String(newest));
+      }
+      resolve(live);
+    };
+
+    const timer = setTimeout(finish, 5000);
+    probe.on("connect", () => ids.forEach((id) => probe.emit("joinRoom", String(id))));
+    probe.on("tournament:updated", (ev) => {
+      const t = ev?.data?.tournament;
+      if (!t || t.id == null) return;
+      found.set(Number(t.id), t);
+      const c = card(Number(t.id));
+      if (!c.tournament) c.tournament = t;
+    });
+    probe.on("connect_error", () => { clearTimeout(timer); finish(); });
+  });
 }
 
 // ---------------------------------------------------------------- socket
