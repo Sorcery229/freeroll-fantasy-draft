@@ -100,8 +100,12 @@ function showView(name) {
 document.querySelectorAll(".tab").forEach((t) =>
   t.addEventListener("click", () => {
     if (!state.name) return showView("name");
-    if (!["home", "season", "finished", "rules"].includes(t.dataset.view) && state.activeId == null) {
-      return showView("home");
+    const needsGame = !["home", "season", "finished", "rules"].includes(t.dataset.view);
+    if (needsGame && state.activeId == null) {
+      // Pick one for them rather than bouncing back to the list.
+      if (state.follow.length) openTournament(state.follow[0], t.dataset.view);
+      else showView("home");
+      return;
     }
     showView(t.dataset.view);
   }));
@@ -189,13 +193,25 @@ async function boot() {
     state.follow = fromUrl;
   } else {
     setStatus("Looking for tournaments\u2026");
-    state.follow = await discoverLive(seeds);
+    showView("home");
+    state.follow = await discoverLive(seeds, (id) => {
+      if (!state.follow.includes(id)) state.follow.push(id);
+      followTournament(id);
+      setStatus("");
+      renderHome();
+    });
     setStatus("");
   }
 
   showView("home");
   for (const id of state.follow) followTournament(id);
-  if (state.follow.length === 1) openTournament(state.follow[0]);
+  // Select one up front so Make Picks and Standings are usable immediately.
+  if (state.follow.length) {
+    state.activeId = state.follow[0];
+    state.contestId = TEST_MODE ? `test-${state.activeId}` : String(state.activeId);
+    prepareContest(state.activeId);
+    watchEntries();
+  }
 
   if (!fromUrl.length && !state.rediscover) {
     state.rediscover = setInterval(refreshLive, 120000);
@@ -235,7 +251,7 @@ async function refreshLive() {
  */
 const SEEN_KEY = "freeroll-fantasy:newest-tournament";
 
-function discoverLive(seedIds) {
+function discoverLive(seedIds, onFound) {
   const remembered = Number(localStorage.getItem(SEEN_KEY) || 0);
   const base = Math.max(remembered, ...seedIds.map(Number), 0);
   if (!base) return Promise.resolve([]);
@@ -252,6 +268,8 @@ function discoverLive(seedIds) {
     });
 
     const finish = () => {
+      clearTimeout(timer);
+      clearTimeout(quiet);
       try { probe.close(); } catch (_) {}
       const live = [...found.entries()]
         .filter(([, t]) => t.status === "in_progress")
@@ -264,7 +282,14 @@ function discoverLive(seedIds) {
       resolve(live);
     };
 
-    const timer = setTimeout(finish, 5000);
+    // Resolve as soon as the window goes quiet rather than always waiting the
+    // full timeout, so the first paint is fast.
+    let quiet = null;
+    const nudge = () => {
+      clearTimeout(quiet);
+      quiet = setTimeout(finish, 700);
+    };
+    const timer = setTimeout(finish, 4000);
     probe.on("connect", () => ids.forEach((id) => probe.emit("joinRoom", String(id))));
     probe.on("tournament:updated", (ev) => {
       const t = ev?.data?.tournament;
@@ -272,6 +297,8 @@ function discoverLive(seedIds) {
       found.set(Number(t.id), t);
       const c = card(Number(t.id));
       if (!c.tournament) c.tournament = t;
+      if (t.status === "in_progress" && typeof onFound === "function") onFound(Number(t.id));
+      nudge();
     });
     probe.on("connect_error", () => { clearTimeout(timer); finish(); });
   });
@@ -373,7 +400,7 @@ async function maybeFreezeResults() {
   } catch (e) { console.warn("freeze results:", e.message); }
 }
 
-function openTournament(id) {
+function openTournament(id, view = "standings") {
   state.activeId = id;
   state.contestId = TEST_MODE ? `test-${id}` : String(id);
   state.mockEntries = [];
@@ -383,7 +410,7 @@ function openTournament(id) {
   followTournament(id);
   prepareContest(id);
   watchEntries();
-  showView("standings");
+  showView(view);
 }
 
 async function prepareContest(id) {
@@ -559,6 +586,35 @@ function cleanTitle(s) {
   return String(s ?? "").replace(/\s*[-–]\s*\d{1,2}\/\d{1,2}\/\d{2,4}\s*$/, "").trim();
 }
 
+/**
+ * Tournament start time. MySQL TIME reaches us in three shapes depending on how
+ * the row was read: a bare "20:00:00", a UTC instant on the epoch day
+ * ("1970-01-01T20:00:00.000Z"), or a local Date string
+ * ("Thu Jan 01 1970 20:00:00 GMT-0500"). The last is what production sends, and
+ * slicing it blindly produced "Thu J" on the cards.
+ */
+function fmtTime(v) {
+  if (!v) return "";
+  const s = String(v).trim();
+  let h = null, m = null;
+
+  if (/^\d{1,2}:\d{2}/.test(s)) {                 // bare clock time
+    const [hh, mm] = s.split(":");
+    h = Number(hh); m = Number(mm);
+  } else if (/Z$|[+-]\d{2}:?\d{2}$/.test(s) && /^\d{4}-\d{2}-\d{2}/.test(s)) {
+    const d = new Date(s);                          // epoch-day instant, read as UTC
+    if (!isNaN(d)) { h = d.getUTCHours(); m = d.getUTCMinutes(); }
+  } else {
+    const d = new Date(s);                          // local Date string
+    if (!isNaN(d)) { h = d.getHours(); m = d.getMinutes(); }
+  }
+
+  if (h == null || m == null || isNaN(h) || isNaN(m)) return "";
+  const suffix = h >= 12 ? "PM" : "AM";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `${h12}:${String(m).padStart(2, "0")} ${suffix}`;
+}
+
 function fmtDate(d) {
   if (!d) return "";
   const dt = new Date(d);
@@ -585,7 +641,7 @@ function renderHome() {
       </div>
       <div class="card-body">
         <div class="row"><span class="ico">🗓</span><span>${esc(fmtDate(t?.date))}${
-          t?.time ? ` <strong style="color:var(--cyan)">@ ${esc(String(t.time).slice(0,5))}</strong>` : ""}</span></div>
+          fmtTime(t?.time) ? ` <strong style="color:var(--cyan)">@ ${esc(fmtTime(t.time))}</strong>` : ""}</span></div>
         <div class="row"><span class="ico">📍</span><span>${esc(t?.venue ?? "")}</span></div>
         <div class="twocol">
           <div class="statbox"><div class="k">Checked In</div><div class="v">${checkedIn(c)}</div></div>
