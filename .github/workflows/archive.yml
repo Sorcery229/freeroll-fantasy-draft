@@ -1,0 +1,45 @@
+name: Archive finished tournaments
+
+# Keeps the Finished tab up to date around the clock, with nobody on the page.
+#
+# Runs every 15 minutes. GitHub throttles scheduled runs on busy repositories,
+# so a run can be late by several minutes; that is harmless here because each
+# run is idempotent and simply archives whatever is not archived yet.
+#
+# No secrets. The job signs in to Firebase anonymously, exactly as a visitor's
+# browser does, and firestore.rules already allow these writes.
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "Lowest tournament id to scan (blank = recent games only)"
+        required: false
+        type: string
+
+concurrency:
+  group: archive
+  cancel-in-progress: false
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install
+        working-directory: scripts
+        run: npm install --omit=dev --no-audit --no-fund
+
+      - name: Archive
+        working-directory: scripts
+        env:
+          BACKFILL_FROM: ${{ inputs.from }}
+        run: node archive.mjs

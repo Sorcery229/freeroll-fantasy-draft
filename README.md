@@ -110,13 +110,10 @@ Picks must close when the TD starts the clock. Enforcement:
   Firestore's servers, so editing the page's JavaScript does not get you past
   it.
 
-Residual weakness, stated plainly: the flag only flips once *some* client has
-observed the start. If literally nobody has the page open at the moment the
-clock starts, a late entry could land in the gap. Two ways to close it if you
-care: keep the standings page open on any screen during the game, or upgrade to
-the Blaze plan and run a scheduled Cloud Function that polls and sets the flag.
-The dashboard branch does not have this weakness, because there the lock is
-read directly from the database on every submit.
+The flag used to flip only once *some* client had observed the start, so a late
+entry could land in the gap if nobody had the page open. The scheduled archiver
+below now also mirrors `game_started`, which narrows that gap to the interval
+between runs rather than leaving it open all night.
 
 ## Setup
 
@@ -242,24 +239,58 @@ separation is much better: 2nd of 27 scores 88.9. If Freeroll ever runs
 100-player events, raise `gamma` in `public/scoring.js` to keep the top places
 apart.
 
-## Pointing it at tonight's game
+## Finding tonight's game
 
-The socket needs a tournament id, and discovering the live one would require
-the CORS-blocked REST API. So it is set manually, once per game:
+Nothing is set by hand. The app finds live games itself: it joins a run of
+tournament ids on one throwaway socket, keeps whichever report
+`status: "in_progress"`, and remembers the newest id it has ever seen in
+`localStorage` so later visits start from there. `?t=<id>` still overrides
+everything for one visit.
 
-- Click **Set tournament** and paste the id, which writes `config/active`; or
-- Open the page with `?t=<id>` to override for one visit.
+The search window is **adaptive**, and that matters. The first version looked a
+fixed number of ids ahead, which failed the moment the league created more
+tournaments than the window spanned between two visits: nothing was found, so
+the remembered id never advanced, so nothing was ever found again. It locked
+itself out. It now walks forward in chunks until a chunk turns up nothing new
+past the highest id it has seen, which recovers from a gap of any size. Starting
+from a browser stuck at id 717 it found the two games running on id 732 and 733
+in under four seconds.
 
-Find the id in the dashboard URL for the live game. Anyone signed in can set it
-(the rules allow it) — if you want that restricted, set `config/active` from
-the Firebase console instead and tighten the `match /config/{docId}` rule to
-`allow write: if false`.
+## Round-the-clock archiving
+
+A finished game used to be recorded only if a browser happened to be watching
+when it ended, or if someone later opened the Finished tab. Games nobody watched
+were lost.
+
+`scripts/archive.mjs`, run every 15 minutes by `.github/workflows/archive.yml`,
+does that work on a schedule instead. It reads the project's public SDK config
+from Hosting, signs in anonymously exactly as a visitor's browser does, walks
+the tournament ids over the socket, and writes `contests/{id}` plus
+`contests/{id}/results/final` for every finished game that is not archived yet.
+It also sets `gameStarted` on games that are running, which is what narrows the
+lock gap described above.
+
+Worth stating: **there are no secrets in this job.** Firebase web config is
+public by design, and every write it makes is one an ordinary visitor could
+already make under the existing `firestore.rules`. It needs no service account
+and no Blaze plan, which is why it is a GitHub Action and not a Cloud Function —
+scheduled Cloud Functions require the paid plan.
+
+Each run is idempotent: a game already frozen with its full field is skipped, so
+a late or duplicated run costs nothing. By default it scans back 40 ids behind
+the known frontier; run the workflow manually with a `from` input to backfill
+further.
+
+The initial backfill has already been run: 32 past games, ids 700 to 731, are in
+the database. The Finished tab loads the 30 most recent of them — every game is
+kept, but each card costs two further reads and the list would get slower every
+week otherwise.
 
 ## Data model
 
 ```
 entrants/{uid}                  { name, updatedAt }
-config/active                   { tournamentId, updatedAt }
+config/discovery                { newest, updatedAt }   # archiver's frontier
 contests/{tournamentId}         { tournamentId, gameStarted, title, venue }
 contests/{tournamentId}/entries/{uid}        { name, picks: [{id, name}] × 5, submittedAt }
 contests/{tournamentId}/results/final        { fieldSize, players[], frozenAt }

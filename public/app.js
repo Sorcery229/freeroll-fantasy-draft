@@ -102,9 +102,9 @@ document.querySelectorAll(".tab").forEach((t) =>
     if (!state.name) return showView("name");
     const needsGame = !["home", "season", "finished", "rules"].includes(t.dataset.view);
     if (needsGame && state.activeId == null) {
-      // Pick one for them rather than bouncing back to the list.
-      if (state.follow.length) openTournament(state.follow[0], t.dataset.view);
-      else showView("home");
+      if (state.follow.length) { openTournament(state.follow[0], t.dataset.view); return; }
+      showView("home");
+      setStatus("No tournament is running right now. Finished games are under the Finished tab.");
       return;
     }
     showView(t.dataset.view);
@@ -250,58 +250,97 @@ async function refreshLive() {
  * newest id we have ever seen, which is remembered between visits.
  */
 const SEEN_KEY = "freeroll-fantasy:newest-tournament";
+const FINISHED_LIMIT = 30;  // how many past games the Finished tab loads
+const PROBE_CHUNK = 20;      // ids per pass
+const PROBE_MAX_CHUNKS = 10; // how far ahead we are willing to walk
 
-function discoverLive(seedIds, onFound) {
-  const remembered = Number(localStorage.getItem(SEEN_KEY) || 0);
-  const base = Math.max(remembered, ...seedIds.map(Number), 0);
-  if (!base) return Promise.resolve([]);
-
-  const ids = [];
-  for (let id = base - 2; id <= base + 14; id++) if (id > 0) ids.push(id);
-
+/**
+ * Walk forward from the newest id we know of until we reach the end of the
+ * league's tournament list, then report which of those are in progress.
+ *
+ * The window has to be adaptive. A fixed lookahead silently stops working the
+ * moment the league creates more tournaments than the window spans between two
+ * visits: nothing is found, so the remembered id never advances, so nothing is
+ * ever found again. Walking in chunks until a chunk comes back empty self heals
+ * from any gap.
+ */
+function probeChunk(probe, ids, found) {
   return new Promise((resolve) => {
-    const found = new Map();
-    const probe = io(FREEROLL_ORIGIN, {
-      transports: ["websocket", "polling"],
-      withCredentials: false,
-      reconnection: false,
-    });
-
-    const finish = () => {
-      clearTimeout(timer);
-      clearTimeout(quiet);
-      try { probe.close(); } catch (_) {}
-      const live = [...found.entries()]
-        .filter(([, t]) => t.status === "in_progress")
-        .map(([id]) => id)
-        .sort((x, y) => y - x);
-      const newest = Math.max(base, ...found.keys());
-      if (Number.isFinite(newest) && newest > remembered) {
-        localStorage.setItem(SEEN_KEY, String(newest));
-      }
-      resolve(live);
-    };
-
-    // Resolve as soon as the window goes quiet rather than always waiting the
-    // full timeout, so the first paint is fast.
-    let quiet = null;
-    const nudge = () => {
-      clearTimeout(quiet);
-      quiet = setTimeout(finish, 700);
-    };
-    const timer = setTimeout(finish, 4000);
-    probe.on("connect", () => ids.forEach((id) => probe.emit("joinRoom", String(id))));
-    probe.on("tournament:updated", (ev) => {
+    let quiet = setTimeout(done, 2500);
+    function onT(ev) {
       const t = ev?.data?.tournament;
-      if (!t || t.id == null) return;
-      found.set(Number(t.id), t);
-      const c = card(Number(t.id));
-      if (!c.tournament) c.tournament = t;
-      if (t.status === "in_progress" && typeof onFound === "function") onFound(Number(t.id));
-      nudge();
-    });
-    probe.on("connect_error", () => { clearTimeout(timer); finish(); });
+      if (t && t.id != null) {
+        found.set(Number(t.id), t);
+        const c = card(Number(t.id));
+        if (!c.tournament) c.tournament = t;
+        clearTimeout(quiet);
+        quiet = setTimeout(done, 600);
+      }
+    }
+    function done() {
+      clearTimeout(quiet);
+      probe.off("tournament:updated", onT);
+      resolve();
+    }
+    probe.on("tournament:updated", onT);
+    ids.forEach((id) => probe.emit("joinRoom", String(id)));
   });
+}
+
+async function discoverLive(seedIds, onFound) {
+  const remembered = Number(localStorage.getItem(SEEN_KEY) || 0);
+  let base = Math.max(remembered, ...seedIds.map(Number), 0);
+  if (!base) base = 1;
+
+  const found = new Map();
+  const probe = io(FREEROLL_ORIGIN, {
+    transports: ["websocket", "polling"],
+    withCredentials: false,
+    reconnection: false,
+  });
+
+  const connected = await new Promise((resolve) => {
+    const giveUp = setTimeout(() => resolve(false), 6000);
+    probe.on("connect", () => { clearTimeout(giveUp); resolve(true); });
+    probe.on("connect_error", () => { clearTimeout(giveUp); resolve(false); });
+  });
+  if (!connected) { try { probe.close(); } catch (_) {} return []; }
+
+  const reported = new Set();
+  const report = () => {
+    if (typeof onFound !== "function") return;
+    for (const [id, t] of found) {
+      if (t.status !== "in_progress" || reported.has(id)) continue;
+      reported.add(id);
+      onFound(id);
+    }
+  };
+
+  // Start just behind the known id, then keep stepping forward while each chunk
+  // still turns up tournaments that exist.
+  let start = Math.max(1, base - 2);
+  let highest = base;
+  for (let chunk = 0; chunk < PROBE_MAX_CHUNKS; chunk++) {
+    const ids = [];
+    for (let id = start; id < start + PROBE_CHUNK; id++) ids.push(id);
+    const before = found.size;
+    await probeChunk(probe, ids, found);
+    report();
+
+    const maxSeen = found.size ? Math.max(...found.keys()) : 0;
+    if (maxSeen > highest) highest = maxSeen;
+    // Nothing new in this chunk and we are already past the frontier: stop.
+    if (found.size === before && start > highest) break;
+    start += PROBE_CHUNK;
+  }
+
+  try { probe.close(); } catch (_) {}
+  if (highest > remembered) localStorage.setItem(SEEN_KEY, String(highest));
+
+  return [...found.entries()]
+    .filter(([, t]) => t.status === "in_progress")
+    .map(([id]) => id)
+    .sort((x, y) => y - x);
 }
 
 // ---------------------------------------------------------------- socket
@@ -1036,11 +1075,19 @@ async function renderFinished() {
         connection and reload.</p>`;
       return;
     }
-    const docsList = all.docs.filter((c) => c.id !== DEMO_ID);
+    let docsList = all.docs.filter((c) => c.id !== DEMO_ID);
     if (!docsList.length) {
       node.innerHTML = `<p class="muted">No contests yet.</p>`;
       return;
     }
+
+    // Every game stays in the database forever, but only the most recent ones
+    // are loaded here. Each card costs two further reads, and the list would
+    // get slower every week otherwise.
+    const total = docsList.length;
+    docsList.sort((p, q) =>
+      String(q.data().date ?? "").localeCompare(String(p.data().date ?? "")));
+    docsList = docsList.slice(0, FINISHED_LIMIT);
 
     // Read every contest at once rather than one after another.
     const loaded = await Promise.all(docsList.map(async (c) => {
@@ -1109,7 +1156,8 @@ async function renderFinished() {
             <strong>${d.rows[0].score.totalPoints}</strong> points for
             <strong>${seasonPointsForRank(1)}</strong> season points</span></div>` : ""}
         </div>
-        ${open ? `<div class="table-wrap"><table>
+        ${open && !d.rows.length ? `<p class="muted">Nobody entered this game.</p>` : ""}
+        ${open && d.rows.length ? `<div class="table-wrap"><table>
           <thead><tr><th>#</th><th>Entrant</th><th>Points</th><th>Their picks</th><th>Season</th></tr></thead>
           <tbody>${d.rows.map((r) => `<tr class="${r.entrantId === state.uid ? "me " : ""}${
             seasonPointsForRank(r.rank) ? "paid" : ""}">
@@ -1121,6 +1169,11 @@ async function renderFinished() {
           </tbody></table></div>` : ""}
       </div>`;
     }).join("");
+
+    if (total > FINISHED_LIMIT) {
+      node.insertAdjacentHTML("beforeend",
+        `<p class="muted">Showing the ${FINISHED_LIMIT} most recent of ${total} games.</p>`);
+    }
 
     node.querySelectorAll("button[data-fid]").forEach((b) =>
       b.addEventListener("click", () => {
