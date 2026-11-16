@@ -16,18 +16,43 @@
 //
 // Firestore holds only our own data: entrant names and picks.
 
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import {
-  getAuth, signInAnonymously, onAuthStateChanged,
-} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import {
-  getFirestore, doc, getDoc, setDoc, collection, onSnapshot,
-  getDocs, query, where, limit, serverTimestamp,
-} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+// The Firebase SDK is loaded DYNAMICALLY, further down in start().
+//
+// As a static import it was fetched and parsed before the first line of this
+// file ran, so roughly 100 KB had to arrive from the CDN before the page could
+// so much as draw the name prompt. That was most of the blank screen. Nothing
+// above the fold needs Firebase: the name form is plain HTML and the tournament
+// feed is a socket to openbarleague.com.
+let initializeApp, getAuth, signInAnonymously, onAuthStateChanged;
+let getFirestore, doc, getDoc, setDoc, collection, onSnapshot;
+let getDocs, query, where, limit, serverTimestamp;
+
+const FIREBASE_VERSION = "10.12.2";
+
+// Resolves once db is usable. Views that read Firestore await this instead of
+// assuming the SDK has arrived, since the page is now interactive before it has.
+let dbReady = null;
+// Resolves with the Firebase config, which arrives long before the SDK does.
+// The REST reads need only the project id, so they wait on this, not on dbReady.
+let configReady = null;
+
+async function loadFirebaseSdk() {
+  const cdn = `https://www.gstatic.com/firebasejs/${FIREBASE_VERSION}`;
+  const [appMod, authMod, fsMod] = await Promise.all([
+    import(`${cdn}/firebase-app.js`),
+    import(`${cdn}/firebase-auth.js`),
+    import(`${cdn}/firebase-firestore.js`),
+  ]);
+  ({ initializeApp } = appMod);
+  ({ getAuth, signInAnonymously, onAuthStateChanged } = authMod);
+  ({ getFirestore, doc, getDoc, setDoc, collection, onSnapshot,
+     getDocs, query, where, limit, serverTimestamp } = fsMod);
+}
+
 import {
   firebaseConfig, FREEROLL_ORIGIN, FOLLOW_TOURNAMENT_IDS, TEST_MODE,
 } from "/config.js";
-import { SCORING, SEASON_POINTS, scoreEntry, isAlive, finishPoints, seasonPointsForRank }
+import { SCORING, SEASON_POINTS, isAlive, finishPoints, seasonPointsForRank, computeStandings, buildSummary }
   from "/scoring.js";
 
 let app = null, auth = null, db = null;
@@ -52,6 +77,9 @@ const DEMO_SEED = 20261021;
 const state = {
   uid: null, name: null,
   view: "home",
+  projectId: null,       // for the REST reads on the Finished and Season tabs
+  booted: false,         // boot() has run; auth must not re-run discovery
+  discovering: false,    // a tournament search is in flight
   follow: [],            // tournament ids shown on the home page
   cards: {},             // id -> { tournament, players, timer }
   activeId: null,        // tournament currently open
@@ -113,6 +141,30 @@ document.querySelectorAll(".tab").forEach((t) =>
 $("#brand").addEventListener("click", () => showView(state.name ? "home" : "name"));
 
 // ---------------------------------------------------------------- identity
+/**
+ * The name shown last time, cached beside the uid it belonged to.
+ *
+ * Reading it costs nothing, which is the point: the page used to sit blank
+ * through four sequential network steps (the Firebase SDK from the CDN,
+ * /__/firebase/init.json, anonymous sign-in, then the entrant document) before
+ * it could decide whether to show the name prompt or the tournament list. With
+ * the name cached it can draw the right screen on the first frame and let all
+ * of that finish in the background.
+ */
+function cachedMe() {
+  try {
+    const raw = localStorage.getItem(ME_KEY);
+    if (!raw) return null;
+    const me = JSON.parse(raw);
+    return me && me.name ? me : null;
+  } catch (_) { return null; }
+}
+
+function rememberMe(uid, name) {
+  try { localStorage.setItem(ME_KEY, JSON.stringify({ uid: uid, name: name })); }
+  catch (_) {}
+}
+
 async function handleAuth(user) {
   if (!user) {
     try { await signInAnonymously(auth); }
@@ -121,22 +173,54 @@ async function handleAuth(user) {
   }
   state.uid = user.uid;
   let snap = null;
-  try { snap = await getDoc(doc(db, "entrants", user.uid)); } catch (_) {}
+  try { snap = await withTimeout(getDoc(doc(db, "entrants", user.uid)), 10000); } catch (_) {}
+
   if (snap && snap.exists() && snap.data().name) {
     state.name = snap.data().name;
     el.whoami.textContent = `Playing as ${state.name}`;
-    await boot();
-  } else {
-    showView("name");
+    rememberMe(user.uid, state.name);
+    // The tournament search already ran from the cached name. Only attach the
+    // Firestore half now; re-running discovery would be wasted work.
+    if (state.booted) attachContest();
+    else await boot();
+    return;
   }
+
+  // No entrant record. If we optimistically drew the tournament list from a
+  // cached name, that cache is stale, so fall back to asking.
+  state.name = null;
+  el.whoami.textContent = "";
+  showView("name");
+}
+
+/** The parts of a contest that need a signed-in user, run once auth lands. */
+function attachContest() {
+  if (state.activeId == null || !db || !state.uid) return;
+  state.contestId = TEST_MODE ? `test-${state.activeId}` : String(state.activeId);
+  prepareContest(state.activeId);
+  watchEntries();
+  render();
 }
 
 $("#name-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
-  if (!db || !state.uid) { $("#name-error").textContent = "Still connecting, try again in a second."; return; }
   const name = $("#name-input").value.trim();
   if (name.length < 2) { $("#name-error").textContent = "Name must be at least 2 characters."; return; }
   $("#name-error").textContent = "";
+
+  // The form is now drawn before sign-in has finished, so someone typing
+  // quickly can arrive here first. Wait for it rather than telling them to try
+  // again.
+  if (!db || !state.uid) {
+    $("#name-error").textContent = "Saving\u2026";
+    await withTimeout(dbReady, 15000);
+    for (let i = 0; i < 100 && !state.uid; i++) await new Promise((r) => setTimeout(r, 100));
+    if (!db || !state.uid) {
+      $("#name-error").textContent = "Could not reach the server. Check your connection and try again.";
+      return;
+    }
+    $("#name-error").textContent = "";
+  }
 
   try {
     // One name per entrant. Compared lower-cased, so "Greg" cannot sit next to
@@ -156,7 +240,9 @@ $("#name-form").addEventListener("submit", async (ev) => {
       { name, name_lc: name.toLowerCase(), updatedAt: serverTimestamp() }, { merge: true });
     state.name = name;
     el.whoami.textContent = `Playing as ${name}`;
-    await boot();
+    rememberMe(state.uid, name);
+    if (state.booted) attachContest();
+    else await boot();
   } catch (e) {
     $("#name-error").textContent = e.message;
   }
@@ -182,6 +268,8 @@ function withTimeout(p, ms) {
 }
 
 async function boot() {
+  if (state.booted) return;
+  state.booted = true;
   if (new URLSearchParams(location.search).has("demo")) return bootDemo();
 
   const param = new URLSearchParams(location.search).get("t");
@@ -192,15 +280,15 @@ async function boot() {
   if (fromUrl.length) {
     state.follow = fromUrl;
   } else {
-    setStatus("Looking for tournaments\u2026");
+    state.discovering = true;
     showView("home");
+    renderHome();
     state.follow = await discoverLive(seeds, (id) => {
       if (!state.follow.includes(id)) state.follow.push(id);
       followTournament(id);
-      setStatus("");
       renderHome();
     });
-    setStatus("");
+    state.discovering = false;
   }
 
   showView("home");
@@ -208,9 +296,7 @@ async function boot() {
   // Select one up front so Make Picks and Standings are usable immediately.
   if (state.follow.length) {
     state.activeId = state.follow[0];
-    state.contestId = TEST_MODE ? `test-${state.activeId}` : String(state.activeId);
-    prepareContest(state.activeId);
-    watchEntries();
+    attachContest();   // no-op until sign-in lands, then re-run from handleAuth
   }
 
   if (!fromUrl.length && !state.rediscover) {
@@ -250,6 +336,7 @@ async function refreshLive() {
  * newest id we have ever seen, which is remembered between visits.
  */
 const SEEN_KEY = "freeroll-fantasy:newest-tournament";
+const ME_KEY = "freeroll-fantasy:me";
 const FINISHED_LIMIT = 30;  // how many past games the Finished tab loads
 const PROBE_CHUNK = 20;      // ids per pass
 const PROBE_MAX_CHUNKS = 10; // how far ahead we are willing to walk
@@ -436,6 +523,16 @@ async function maybeFreezeResults() {
       })),
       frozenAt: serverTimestamp(),
     }, { merge: true });
+    // Also store the precomputed summary, so a game someone watched to the end
+    // shows up under Finished at once rather than waiting for the next
+    // scheduled archive run.
+    await setDoc(doc(db, "contests", String(state.contestId)), {
+      // state.entries, NOT allEntries(): the latter includes the page-local
+      // synthetic predictions from TEST_MODE, which must never be persisted.
+      summary: buildSummary(players, state.entries),
+      fieldSize: players.length,
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
   } catch (e) { console.warn("freeze results:", e.message); }
 }
 
@@ -453,7 +550,7 @@ function openTournament(id, view = "standings") {
 }
 
 async function prepareContest(id) {
-  if (!TEST_MODE) return;
+  if (!TEST_MODE || !db || !state.uid) return;
   try {
     await withTimeout(setDoc(doc(db, "contests", String(state.contestId)),
       { tournamentId: id, gameStarted: false, title: `Test ${id}`, updatedAt: serverTimestamp() },
@@ -461,72 +558,9 @@ async function prepareContest(id) {
   } catch (e) { console.warn("contest prepare:", e.message); }
 }
 
-/**
- * Archive a finished tournament that nobody was watching when it ended.
- *
- * Contests used to be frozen only by a client that happened to be on the page
- * at the final knockout, so a game that ended unobserved never appeared under
- * Finished. This fetches the final roster over the socket and writes it, which
- * works for any past tournament because joinRoom serves its record whatever the
- * status.
- */
-function archiveContest(tournamentId, contestId) {
-  return new Promise((resolve) => {
-    const s = io(FREEROLL_ORIGIN, {
-      transports: ["websocket", "polling"],
-      withCredentials: false,
-      reconnection: false,
-    });
-    let players = null, tournament = null, settled = false;
-
-    const done = async (ok) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try { s.close(); } catch (_) {}
-      if (!ok || !players?.length || !tournament) return resolve(false);
-      if (tournament.status === "in_progress") return resolve(false);
-      try {
-        await setDoc(doc(db, "contests", String(contestId), "results", "final"), {
-          fieldSize: players.length,
-          players: players.map((p) => ({
-            id: Number(p.id), name: String(p.name), nickname: p.nickname ?? null,
-            placement: p.placement ?? null,
-            elimination_position: p.elimination_position ?? null,
-            hitman_name: p.hitman_name ?? null,
-            is_active: Boolean(p.is_active),
-          })),
-          frozenAt: serverTimestamp(),
-        }, { merge: true });
-        await setDoc(doc(db, "contests", String(contestId)), {
-          tournamentId: Number(tournamentId),
-          title: tournament.title ?? null,
-          venue: tournament.venue ?? null,
-          td: tournament.td ?? null,
-          date: tournament.date ?? null,
-          fieldSize: players.length,
-        }, { merge: true });
-        resolve(true);
-      } catch (e) {
-        console.warn("archive failed:", e.message);
-        resolve(false);
-      }
-    };
-
-    const timer = setTimeout(() => done(false), 8000);
-    s.on("connect", () => s.emit("joinRoom", String(tournamentId)));
-    s.on("updatePlayers", (p) => { if (Array.isArray(p)) players = p; if (tournament) done(true); });
-    s.on("tournament:updated", (ev) => {
-      tournament = ev?.data?.tournament ?? null;
-      if (players) done(true);
-    });
-    s.on("connect_error", () => done(false));
-  });
-}
-
 // ---------------------------------------------------------------- entries
 function watchEntries() {
-  if (!state.contestId) return;
+  if (!state.contestId || !db || !state.uid) return;
   onSnapshot(collection(db, "contests", String(state.contestId), "entries"), (snap) => {
     state.entries = snap.docs.map((d) => ({ entrantId: d.id, ...d.data() }));
     const mine = state.entries.find((e) => e.entrantId === state.uid);
@@ -692,7 +726,10 @@ function renderHome() {
     </button>`;
   });
   $("#home-cards").innerHTML = nodes.join("");
-  $("#home-empty").hidden = ids.length > 0;
+  // "Looking for games" and "there are none" are different things to say.
+  $("#home-empty").hidden = ids.length > 0 || state.discovering;
+  const searching = $("#home-searching");
+  if (searching) searching.hidden = ids.length > 0 || !state.discovering;
   $("#home-cards").querySelectorAll(".card").forEach((b) =>
     b.addEventListener("click", () => openTournament(Number(b.dataset.id))));
 }
@@ -783,15 +820,6 @@ function renderTournament() {
   }
 
   renderStandingsTable(players);
-}
-
-function computeStandings(players, entries) {
-  return entries
-    .map((e) => ({ ...e, score: scoreEntry(e.picks ?? [], players) }))
-    .sort((a, b) => b.score.totalPoints - a.score.totalPoints ||
-      b.score.picksAlive - a.score.picksAlive ||
-      String(a.name).localeCompare(String(b.name)))
-    .map((row, i) => ({ ...row, rank: i + 1 }));
 }
 
 function renderStandingsTable(players) {
@@ -1065,74 +1093,157 @@ function renderRules() {
  * Every contest that has a frozen final roster, with its full standings and the
  * season points it paid out. Scored from `results/final`, so no socket needed.
  */
+/**
+ * Load every contest in ONE query.
+ *
+ * Each card used to cost two further reads — its entries subcollection and its
+ * frozen roster. Past about forty archived games that is ninety round trips,
+ * which wedged the Firestore channel in Safari and left this tab showing
+ * "Could not reach the database". The scheduled archiver now precomputes what
+ * these views display and stores it on the contest document as `summary`, so
+ * one query is enough. A finished game's standings never change, so there is
+ * nothing to recompute here.
+ */
+/** Decode one Firestore REST typed value into a plain JS value. */
+function fromRest(v) {
+  if (!v || typeof v !== "object") return null;
+  if ("nullValue" in v) return null;
+  if ("stringValue" in v) return v.stringValue;
+  if ("booleanValue" in v) return v.booleanValue;
+  if ("integerValue" in v) return Number(v.integerValue);
+  if ("doubleValue" in v) return Number(v.doubleValue);
+  if ("timestampValue" in v) return v.timestampValue;
+  if ("arrayValue" in v) return (v.arrayValue.values ?? []).map(fromRest);
+  if ("mapValue" in v) return restFields(v.mapValue.fields);
+  return null;
+}
+
+function restFields(fields) {
+  const out = {};
+  for (const [k, v] of Object.entries(fields ?? {})) out[k] = fromRest(v);
+  return out;
+}
+
+/**
+ * One-shot Firestore REST read.
+ *
+ * Every document these views touch is world-readable (firestore.rules:
+ * `allow read: if true`), so this needs no auth and no streaming channel. That
+ * is the point: the SDK talks over a long-lived WebChannel, and when that
+ * channel stalls in Safari an ordinary list read hangs with it, which is what
+ * produced "Could not reach the database" on this tab. A plain fetch cannot get
+ * stuck behind it. Measured against the live project: the whole contest list,
+ * 69 documents, in under 300 ms.
+ */
+async function restGet(path, ms = 9000) {
+  if (typeof AbortController === "undefined") return null;
+  if (!state.projectId && configReady) await withTimeout(configReady, 6000);
+  if (!state.projectId) return null;
+  const ctrl = new AbortController();
+  const giveUp = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(
+      `https://firestore.googleapis.com/v1/projects/${state.projectId}` +
+      `/databases/(default)/documents/${path}`, { signal: ctrl.signal });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(giveUp);
+  }
+}
+
+async function fetchContestsRest() {
+  const docs = [];
+  let token = "";
+  for (let page = 0; page < 10; page++) {
+    const body = await restGet(`contests?pageSize=300${token}`);
+    if (!body) return null;
+    docs.push(...(body.documents ?? []));
+    if (!body.nextPageToken) break;
+    token = `&pageToken=${encodeURIComponent(body.nextPageToken)}`;
+  }
+  return docs.map((d) => {
+    const meta = restFields(d.fields);
+    return { id: d.name.split("/").pop(), meta, summary: meta.summary ?? null };
+  });
+}
+
+/**
+ * Rebuild a missing summary from the frozen roster, in the page.
+ *
+ * The scheduled archiver normally writes it, but it can be behind, or running
+ * an older revision. A finished game should not be invisible because of that.
+ * Bounded to the newest few so a long outage cannot turn this into a fan-out.
+ */
+const REBUILD_LIMIT = 12;
+
+async function rebuildMissingSummaries(rows) {
+  const missing = rows
+    .filter((x) => !x.summary && x.id !== DEMO_ID && x.meta.tournamentId != null)
+    .sort((p, q) => String(q.meta.date ?? "").localeCompare(String(p.meta.date ?? "")))
+    .slice(0, REBUILD_LIMIT);
+  if (!missing.length) return;
+
+  await Promise.all(missing.map(async (x) => {
+    const [finalDoc, entriesDoc] = await Promise.all([
+      restGet(`contests/${encodeURIComponent(x.id)}/results/final`),
+      restGet(`contests/${encodeURIComponent(x.id)}/entries?pageSize=300`),
+    ]);
+    const players = finalDoc && finalDoc.fields ? restFields(finalDoc.fields).players : null;
+    if (!Array.isArray(players) || !players.length) return;   // still running
+    const entries = ((entriesDoc && entriesDoc.documents) ?? []).map((d) => ({
+      entrantId: d.name.split("/").pop(), ...restFields(d.fields),
+    }));
+    x.summary = buildSummary(players, entries);
+    if (x.meta.fieldSize == null) x.meta.fieldSize = players.length;
+  }));
+}
+
+async function loadSummaries() {
+  let rows = await fetchContestsRest();
+  if (rows) await rebuildMissingSummaries(rows);
+
+  if (!rows) {
+    // Fallback: the SDK. Slower to get going, but it is already authenticated
+    // and works if a content blocker objects to the bare REST endpoint.
+    if (!db) await withTimeout(dbReady, 15000);
+    if (!db) return null;
+    const all = await withTimeout(getDocs(collection(db, "contests")), 12000);
+    if (!all) return null;
+    rows = all.docs.map((c) => ({ id: c.id, meta: c.data(), summary: c.data().summary ?? null }));
+  }
+
+  return rows
+    .filter((x) => x.id !== DEMO_ID)
+    .filter((x) => x.summary);
+}
+
 async function renderFinished() {
   const node = $("#finished-list");
   node.innerHTML = `<p class="muted">Loading\u2026</p>`;
   try {
-    const all = await withTimeout(getDocs(collection(db, "contests")), 8000);
-    if (!all) {
+    const loaded = await loadSummaries();
+    if (!loaded) {
       node.innerHTML = `<p class="error">Could not reach the database. Check your
         connection and reload.</p>`;
       return;
     }
-    let docsList = all.docs.filter((c) => c.id !== DEMO_ID);
-    if (!docsList.length) {
-      node.innerHTML = `<p class="muted">No contests yet.</p>`;
+    if (!loaded.length) {
+      node.innerHTML = `<p class="muted">No finished games yet. Games are archived
+        automatically within about fifteen minutes of ending.</p>`;
       return;
     }
 
-    // Every game stays in the database forever, but only the most recent ones
-    // are loaded here. Each card costs two further reads, and the list would
-    // get slower every week otherwise.
-    const total = docsList.length;
-    docsList.sort((p, q) =>
-      String(q.data().date ?? "").localeCompare(String(p.data().date ?? "")));
-    docsList = docsList.slice(0, FINISHED_LIMIT);
-
-    // Read every contest at once rather than one after another.
-    const loaded = await Promise.all(docsList.map(async (c) => {
-      const [entriesSnap, finalSnap] = await Promise.all([
-        withTimeout(getDocs(collection(db, "contests", c.id, "entries")), 8000),
-        withTimeout(getDoc(doc(db, "contests", c.id, "results", "final")), 8000),
-      ]);
-      return { id: c.id, meta: c.data(), entriesSnap, finalSnap };
-    }));
-
-    // Any contest with entries but no frozen roster gets archived now.
-    const toArchive = loaded.filter((x) =>
-      x.entriesSnap?.size && !(x.finalSnap && x.finalSnap.exists()) && x.meta?.tournamentId != null);
-    if (toArchive.length) {
-      node.innerHTML = `<p class="muted">Archiving ${toArchive.length}
-        finished game${toArchive.length > 1 ? "s" : ""}\u2026</p>`;
-      const results = await Promise.all(
-        toArchive.map((x) => archiveContest(x.meta.tournamentId, x.id)));
-      if (results.some(Boolean)) return renderFinished();   // reload with the new archives
-    }
-
-    const done = [];
-    for (const x of loaded) {
-      if (!(x.finalSnap && x.finalSnap.exists())) continue;
-      const players = x.finalSnap.data().players ?? [];
-      if (!players.length) continue;
-      const rows = computeStandings(
-        players,
-        (x.entriesSnap?.docs ?? []).map((d) => ({ entrantId: d.id, ...d.data() }))
-      );
-      done.push({ id: x.id, meta: x.meta, players, rows });
-    }
-
-    done.sort((p, q) => String(q.meta.date ?? "").localeCompare(String(p.meta.date ?? "")));
-
-    if (!done.length) {
-      node.innerHTML = `<p class="muted">No finished contests with entries yet.
-        A game is archived once it has ended and someone opens this tab.</p>`;
-      return;
-    }
+    loaded.sort((p, q) =>
+      String(q.meta.date ?? "").localeCompare(String(p.meta.date ?? "")));
+    const total = loaded.length;
+    const done = loaded.slice(0, FINISHED_LIMIT);
 
     node.innerHTML = done.map((d) => {
-      const m = d.meta;
-      const champ = d.players.find((p) => Number(p.placement) === 1)
-        ?? d.players.find((p) => Number(p.elimination_position) === d.players.length);
+      const m = d.meta, s = d.summary;
+      const rows = s.standings ?? [];
       const open = state.finishedOpen === d.id;
       return `<div class="fcard">
         <div class="fcard-top">
@@ -1142,30 +1253,30 @@ async function renderFinished() {
               ${m.date ? `<span>${esc(fmtDate(m.date))}</span>` : ""}
               ${m.venue ? `<span>${esc(m.venue)}</span>` : ""}
               ${m.td ? `<span>TD ${esc(m.td)}</span>` : ""}
-              <span><strong>${d.players.length}</strong> players</span>
-              <span><strong>${d.rows.length}</strong> entries</span>
+              <span><strong>${m.fieldSize ?? "?"}</strong> players</span>
+              <span><strong>${s.entryCount ?? rows.length}</strong> entries</span>
             </div>
           </div>
-          <button class="draftbtn" data-fid="${d.id}">${open ? "Hide" : "Standings"}</button>
+          ${rows.length ? `<button class="draftbtn" data-fid="${d.id}">${open ? "Hide" : "Standings"}</button>` : ""}
         </div>
         <div class="fcard-body">
           <div class="row"><span class="ico">&#127942;</span><span>Tournament won by
-            <strong>${esc(champ ? (champ.nickname || champ.name) : "?")}</strong></span></div>
-          ${d.rows[0] ? `<div class="row"><span class="ico">&#129351;</span><span>Fantasy winner
-            <strong>${esc(d.rows[0].name)}</strong> with
-            <strong>${d.rows[0].score.totalPoints}</strong> points for
-            <strong>${seasonPointsForRank(1)}</strong> season points</span></div>` : ""}
+            <strong>${esc(s.champion || "?")}</strong></span></div>
+          ${rows[0] ? `<div class="row"><span class="ico">&#129351;</span><span>Fantasy winner
+            <strong>${esc(rows[0].name)}</strong> with
+            <strong>${rows[0].totalPoints}</strong> points for
+            <strong>${rows[0].seasonPoints}</strong> season points</span></div>`
+            : `<div class="row"><span class="muted">Nobody entered this game.</span></div>`}
         </div>
-        ${open && !d.rows.length ? `<p class="muted">Nobody entered this game.</p>` : ""}
-        ${open && d.rows.length ? `<div class="table-wrap"><table>
+        ${open && rows.length ? `<div class="table-wrap"><table>
           <thead><tr><th>#</th><th>Entrant</th><th>Points</th><th>Their picks</th><th>Season</th></tr></thead>
-          <tbody>${d.rows.map((r) => `<tr class="${r.entrantId === state.uid ? "me " : ""}${
-            seasonPointsForRank(r.rank) ? "paid" : ""}">
+          <tbody>${rows.map((r) => `<tr class="${r.entrantId === state.uid ? "me " : ""}${
+            r.seasonPoints ? "paid" : ""}">
             <td>${r.rank}</td><td>${esc(r.name)}</td>
-            <td><strong>${r.score.totalPoints}</strong></td>
-            <td class="picksum">${r.score.picks.map((p) =>
-              `${esc(p.name)} <span class="place">#${p.finishedPlace ?? "?"}</span>`).join(" \u00b7 ")}</td>
-            <td class="season">${seasonPointsForRank(r.rank) || "0"}</td></tr>`).join("")}
+            <td><strong>${r.totalPoints}</strong></td>
+            <td class="picksum">${(r.picks ?? []).map((p) =>
+              `${esc(p.name)} <span class="place">#${p.place ?? "?"}</span>`).join(" \u00b7 ")}</td>
+            <td class="season">${r.seasonPoints || "0"}</td></tr>`).join("")}
           </tbody></table></div>` : ""}
       </div>`;
     }).join("");
@@ -1185,83 +1296,62 @@ async function renderFinished() {
   }
 }
 
-// ---------------------------------------------------------------- season
 async function renderSeason() {
   const node = $("#season-table");
   node.innerHTML = `<p class="muted">Loading\u2026</p>`;
   try {
-    const all = await withTimeout(getDocs(collection(db, "contests")), 8000);
-    if (!all) {
+    const loaded = await loadSummaries();
+    if (!loaded) {
       node.innerHTML = `<p class="error">Could not reach the database. Check your
         connection and reload.</p>`;
       return;
     }
 
-    // Test contests count here too, otherwise the table is empty for the whole
-    // dry-run period. Only the demo field is excluded.
-    const docsList = all.docs.filter((c) => c.id !== DEMO_ID);
-    const loaded = await Promise.all(docsList.map(async (c) => {
-      const [entriesSnap, finalSnap] = await Promise.all([
-        withTimeout(getDocs(collection(db, "contests", c.id, "entries")), 8000),
-        withTimeout(getDoc(doc(db, "contests", c.id, "results", "final")), 8000),
-      ]);
-      return { id: c.id, entriesSnap, finalSnap };
-    }));
-
+    // Season points come from PLACING in a game, not from the raw score, so
+    // every game is worth the same however big its field was.
     const totals = new Map();
     let counted = 0;
     for (const x of loaded) {
-      if (!x.entriesSnap?.size) continue;
-      let players = (x.finalSnap && x.finalSnap.exists()) ? (x.finalSnap.data().players ?? []) : null;
-      if (!players && String(state.contestId) === x.id) players = active()?.players ?? [];
-      if (!players || !players.length) continue;
+      const rows = x.summary.standings ?? [];
+      if (!rows.length) continue;
       counted++;
-
-      // Season points come from PLACING in the game, not the raw score, so
-      // every game is worth the same however big it was.
-      const ranked = computeStandings(
-        players,
-        x.entriesSnap.docs.map((d) => ({ entrantId: d.id, ...d.data() }))
-      );
-      for (const row of ranked) {
-        const earned = seasonPointsForRank(row.rank);
-        const prev = totals.get(row.entrantId)
-          ?? { name: row.name, points: 0, contests: 0, best: null };
-        totals.set(row.entrantId, {
-          name: row.name ?? prev.name,
-          points: prev.points + earned,
-          contests: prev.contests + 1,
-          best: prev.best == null ? row.rank : Math.min(prev.best, row.rank),
-        });
+      for (const r of rows) {
+        const prev = totals.get(r.entrantId)
+          ?? { name: r.name, points: 0, contests: 0, best: null };
+        prev.name = r.name;
+        prev.points += r.seasonPoints || 0;
+        prev.contests += 1;
+        prev.best = prev.best == null ? r.rank : Math.min(prev.best, r.rank);
+        totals.set(r.entrantId, prev);
       }
     }
 
-    const rows = [...totals.entries()].map(([id, v]) => ({ id, ...v }))
-      .sort((p, q) => q.points - p.points || p.name.localeCompare(q.name));
+    if (!totals.size) {
+      node.innerHTML = `<p class="muted">No finished games with entries yet.</p>`;
+      return;
+    }
 
-    node.innerHTML = rows.length
-      ? `<p class="muted">${SEASON_POINTS[0]} points for winning a game, then
-         ${SEASON_POINTS.slice(1).join(", ")} down to
-         ${SEASON_POINTS.length}${ordinal(SEASON_POINTS.length)}. Ninth and below
-         score nothing, so a game is worth at most ${SEASON_POINTS[0]}.
-         Counting ${counted} game${counted === 1 ? "" : "s"}.</p>
-         <div class="table-wrap"><table><thead><tr><th>#</th><th>Entrant</th>
-         <th>Season Pts</th><th>Games</th><th>Best Finish</th><th>Avg</th></tr></thead><tbody>
-         ${rows.map((r, i) => `<tr class="${r.id === state.uid ? "me " : ""}${
-           i < SEASON_POINTS.length ? "paid" : ""}"><td>${i + 1}</td>
-           <td>${esc(r.name)}</td><td><strong>${r.points}</strong></td><td>${r.contests}</td>
-           <td>${r.best ? "#" + r.best : "0"}</td>
-           <td>${Math.round((r.points / r.contests) * 10) / 10}</td></tr>`).join("")}
-         </tbody></table></div>`
-      : `<p class="muted">Nothing to show yet. A game counts towards the season
-         once it has finished and been archived, which happens when someone opens
-         the Finished tab after it ends.</p>`;
+    const rows = [...totals.entries()]
+      .map(([entrantId, v]) => ({ entrantId, ...v }))
+      .sort((p, q) => q.points - p.points || p.best - q.best ||
+        String(p.name).localeCompare(String(q.name)))
+      .map((r, i) => ({ ...r, rank: i + 1 }));
+
+    node.innerHTML = `<p class="muted">${counted} game${counted === 1 ? "" : "s"} counted.</p>
+      <div class="table-wrap"><table>
+      <thead><tr><th>#</th><th>Entrant</th><th>Season points</th><th>Games</th><th>Best finish</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr class="${r.entrantId === state.uid ? "me " : ""}${
+        r.rank <= 8 ? "paid" : ""}">
+        <td>${r.rank}</td><td>${esc(r.name)}</td>
+        <td><strong>${r.points}</strong></td>
+        <td>${r.contests}</td>
+        <td>${r.best ? ordinal(r.best) : "\u2014"}</td></tr>`).join("")}
+      </tbody></table></div>`;
   } catch (e) {
     node.innerHTML = `<p class="error">${esc(e.message)}</p>`;
   }
 }
 
-// ---------------------------------------------------------------- demo
 async function bootDemo() {
   state.demo = true;
   state.activeId = DEMO_ID;
@@ -1350,8 +1440,38 @@ function wireDemo() {
 // ---------------------------------------------------------------- start
 setInterval(() => { if (state.view === "standings") renderClock(); }, 1000);
 
+/**
+ * Draw something on the first frame, then do the slow work in parallel.
+ *
+ * This used to be strictly sequential: config fetch, then sign-in, then the
+ * entrant document, and only then was any view unhidden. Every one of those is
+ * a network round trip, and the page was blank for all of them. Now the cached
+ * name decides what to draw immediately, the tournament search starts at once
+ * over its own socket (it needs nothing from Firebase), and Firebase sign-in
+ * runs alongside instead of in front.
+ */
 (async function start() {
-  const cfg = await resolveConfig();
+  let resolveDbReady;
+  dbReady = new Promise((r) => { resolveDbReady = r; });
+
+  const me = cachedMe();
+  if (me) {
+    state.name = me.name;
+    el.whoami.textContent = `Playing as ${me.name}`;
+  }
+  showView(me ? "home" : "name");
+
+  // Discovery talks to openbarleague.com, not to Firebase, so it need not wait
+  // for sign-in. A returning visitor sees tonight's games while auth is still
+  // in flight. A new one is typing their name during the same window.
+  const discovery = me ? boot() : Promise.resolve();
+
+  // Config fetch and SDK download run together; neither blocks the first paint.
+  // The config lands first and is published immediately, so the REST reads on
+  // the Finished and Season tabs do not have to wait for the 170 KB of SDK.
+  configReady = resolveConfig();
+  configReady.then((c) => { if (c) state.projectId = c.projectId ?? null; });
+  const [cfg] = await Promise.all([configReady, loadFirebaseSdk()]);
   if (!cfg) {
     setStatus("Firebase config not found. Deploy with Firebase Hosting, or fill in public/config.js.", "error");
     return;
@@ -1359,5 +1479,8 @@ setInterval(() => { if (state.view === "standings") renderClock(); }, 1000);
   app = initializeApp(cfg);
   auth = getAuth(app);
   db = getFirestore(app);
+  resolveDbReady();
   onAuthStateChanged(auth, handleAuth);
+
+  await discovery;
 })();

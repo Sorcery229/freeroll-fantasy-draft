@@ -256,6 +256,34 @@ past the highest id it has seen, which recovers from a gap of any size. Starting
 from a browser stuck at id 717 it found the two games running on id 732 and 733
 in under four seconds.
 
+## First paint
+
+The page used to be blank through four sequential steps: the Firebase SDK from
+the CDN, `/__/firebase/init.json`, anonymous sign-in, then the entrant document.
+Only after all of that did it decide whether to show the name prompt or the
+tournament list. Nothing above the fold actually needs any of it.
+
+Three changes:
+
+1. **The display name is cached** in `localStorage` beside the uid it belongs
+   to, so a return visit draws the tournament list on the first frame. Firestore
+   confirms it in the background, and corrects it if the cache is stale.
+2. **The Firebase SDK loads dynamically**, inside `start()`, instead of as a
+   static import at the top of the module. As a static import the browser had to
+   fetch and parse it before the first line of the file ran.
+3. **The tournament search starts immediately**, in parallel with sign-in. It
+   talks to openbarleague.com over a socket and needs nothing from Firebase, so
+   there was never a reason for it to wait.
+
+Measured on the real bundles: what must arrive before the first screen can be
+drawn went from **258 KB over 7 requests, plus three sequential round trips**,
+down to **87 KB over 4 requests and no round trips**. The 170 KB of Firebase SDK
+still loads, just no longer in front of the user.
+
+Views that read Firestore await `dbReady` rather than assuming the SDK has
+arrived, since the page is now interactive before it has. The name form waits
+for sign-in on submit instead of refusing with "still connecting".
+
 ## Round-the-clock archiving
 
 A finished game used to be recorded only if a browser happened to be watching
@@ -276,22 +304,77 @@ already make under the existing `firestore.rules`. It needs no service account
 and no Blaze plan, which is why it is a GitHub Action and not a Cloud Function —
 scheduled Cloud Functions require the paid plan.
 
-Each run is idempotent: a game already frozen with its full field is skipped, so
-a late or duplicated run costs nothing. By default it scans back 40 ids behind
-the known frontier; run the workflow manually with a `from` input to backfill
-further.
+Each run is idempotent: a game already frozen with its full field and summarised
+is skipped, so a late or duplicated run costs nothing. By default it scans back
+40 ids behind the known frontier; run the workflow manually with a `from` input
+to backfill further, or with `RESUMMARISE=1` to rebuild stored summaries after a
+shape change.
 
-The initial backfill has already been run: 32 past games, ids 700 to 731, are in
-the database. The Finished tab loads the 30 most recent of them — every game is
-kept, but each card costs two further reads and the list would get slower every
-week otherwise.
+The backfill has been run: **41 games, ids 693 to 733**, are in the database.
+
+## The list views do not use the Firestore SDK
+
+The SDK talks to Firestore over a long-lived WebChannel. When that channel
+stalls in Safari, an ordinary list read hangs with it, and the Finished tab
+showed *Could not reach the database* after its timeout expired, with Season
+stuck on *Loading...* The documents behind both tabs are world-readable
+(`allow read: if true` in `firestore.rules`), so they do not need that channel,
+or any authentication.
+
+Both tabs now read the contest list with a plain `fetch` against the Firestore
+REST API. Measured against the live project: **69 documents, 84 KB, under 300
+ms**, where the SDK read was exceeding a 12-second timeout. The SDK remains the
+fallback, in case a content blocker objects to the bare REST endpoint, and it is
+still what powers the live entry feed, where streaming is the whole point.
+
+The project id comes from `/__/firebase/init.json`, which is published to
+`state.projectId` as soon as it resolves rather than waiting for the SDK, so
+these reads are not stuck behind the 170 KB download either.
+
+## A finished game is never invisible
+
+Contest summaries are written by the scheduled archiver, but it can be behind,
+or running an older revision of the script. That happened: the app was deployed
+reading summaries while the Action was still on a commit that did not write
+them, and twenty games went missing from Finished.
+
+The page now rebuilds a missing summary itself, from the frozen roster and the
+entries, using the same `buildSummary` the archiver uses. Verified by stripping
+four stored summaries and rebuilding them in the page's own code path: all four
+came back identical to what the archiver had written, in 329 ms for the four.
+It is bounded to the newest `REBUILD_LIMIT` (12) games so a long outage cannot
+turn it into an unbounded fan-out.
+
+## Why the summary lives on the contest document
+
+The Finished and Season tabs used to read every contest and then, for each one,
+its entries subcollection and its frozen roster. At 40-odd archived games that
+is ninety round trips. It worked at four contests and fell over at forty: the
+Firestore channel wedged in Safari and the tab showed *Could not reach the
+database*, with Season stuck on *Loading...* forever.
+
+A finished game's standings can never change, so they are now computed once and
+stored on the contest document as `summary` — champion, entry count, and the
+ranked rows with each entrant's picks, points and season points. Both tabs read
+a single query of about 57 KB.
+
+`buildSummary` and `computeStandings` live in `public/scoring.js`, imported by
+both the page and the archiver, so the two cannot drift apart. Verified: a
+summary recomputed in the browser's code path is byte-identical to the one the
+scheduled job stored.
+
+A game someone watched to the end is summarised by their browser immediately, so
+it appears under Finished without waiting for the next scheduled run. That path
+deliberately uses the real entries only, never the synthetic TEST_MODE
+predictions, which must not reach the database.
 
 ## Data model
 
 ```
 entrants/{uid}                  { name, updatedAt }
 config/discovery                { newest, updatedAt }   # archiver's frontier
-contests/{tournamentId}         { tournamentId, gameStarted, title, venue }
+contests/{tournamentId}         { tournamentId, gameStarted, title, venue, fieldSize,
+                                  summary: { champion, entryCount, standings[] } }
 contests/{tournamentId}/entries/{uid}        { name, picks: [{id, name}] × 5, submittedAt }
 contests/{tournamentId}/results/final        { fieldSize, players[], frozenAt }
 ```

@@ -21,6 +21,7 @@
 // write here is one an ordinary visitor could already make.
 
 import { io } from "socket.io-client";
+import { buildSummary } from "../public/scoring.js";
 
 // Only relevant when the job runs behind an HTTP proxy. GitHub's runners are
 // not, so this stays inert there and https-proxy-agent is never loaded.
@@ -39,6 +40,8 @@ const FS = "https://firestore.googleapis.com/v1";
 // looking for new games.
 const BACK = Number(process.env.BACKFILL_BACK || 40);
 const FROM = process.env.BACKFILL_FROM ? Number(process.env.BACKFILL_FROM) : null;
+// Set when the summary shape changes and stored ones must be rebuilt.
+const RESUMMARISE = process.env.RESUMMARISE === "1";
 const CHUNK = 25;
 const MAX_CHUNKS = 12;
 
@@ -95,7 +98,7 @@ async function read(path) {
   return r.json();
 }
 
-/** Every contest doc that already exists, mapped to its tournament id. */
+/** Every contest doc that already exists, with what we need to decide on it. */
 async function existingContests() {
   const out = new Map();
   let token = "";
@@ -106,13 +109,59 @@ async function existingContests() {
     const j = await r.json();
     for (const d of j.documents || []) {
       const id = d.name.split("/").pop();
-      const tid = d.fields && d.fields.tournamentId && d.fields.tournamentId.integerValue;
-      out.set(id, tid ? Number(tid) : null);
+      const f = d.fields || {};
+      out.set(id, {
+        tournamentId: f.tournamentId ? Number(f.tournamentId.integerValue) : null,
+        hasSummary: RESUMMARISE ? false : Boolean(f.summary),
+      });
     }
     if (!j.nextPageToken) break;
     token = "&pageToken=" + j.nextPageToken;
   }
   return out;
+}
+
+
+/** Turn a frozen results/final document back into plain player objects. */
+function decodePlayers(finalDoc) {
+  const vals = (finalDoc && finalDoc.fields && finalDoc.fields.players &&
+    finalDoc.fields.players.arrayValue && finalDoc.fields.players.arrayValue.values) || [];
+  return vals.map((v) => {
+    const f = (v.mapValue && v.mapValue.fields) || {};
+    const num = (k) => (f[k] && f[k].integerValue != null ? Number(f[k].integerValue) : null);
+    return {
+      id: num("id"),
+      name: f.name && f.name.stringValue ? f.name.stringValue : "",
+      nickname: f.nickname && f.nickname.stringValue ? f.nickname.stringValue : null,
+      placement: num("placement"),
+      elimination_position: num("elimination_position"),
+      hitman_name: f.hitman_name && f.hitman_name.stringValue ? f.hitman_name.stringValue : null,
+      is_active: Boolean(f.is_active && f.is_active.booleanValue),
+    };
+  });
+}
+
+/** One contest's entries, as the scorer expects them. */
+async function readEntries(contestId) {
+  const r = await fetch(base + "/contests/" + contestId + "/entries?pageSize=300",
+    { headers: { authorization: "Bearer " + idToken } });
+  if (!r.ok) return [];
+  const j = await r.json();
+  return (j.documents || []).map((d) => {
+    const f = d.fields || {};
+    const picks = ((f.picks && f.picks.arrayValue && f.picks.arrayValue.values) || []).map((p) => {
+      const pf = (p.mapValue && p.mapValue.fields) || {};
+      return {
+        id: pf.id ? Number(pf.id.integerValue) : null,
+        name: pf.name ? pf.name.stringValue : "",
+      };
+    });
+    return {
+      entrantId: d.name.split("/").pop(),
+      name: f.name ? f.name.stringValue : "",
+      picks: picks,
+    };
+  });
 }
 
 // -------------------------------------------------------------------- socket
@@ -190,7 +239,7 @@ async function main() {
   const frontierDoc = await read("config/discovery");
   const remembered = Number((frontierDoc && frontierDoc.fields && frontierDoc.fields.newest &&
     frontierDoc.fields.newest.integerValue) || 0);
-  const fromContests = Math.max(0, ...[...known.values()].filter(Boolean), 0);
+  const fromContests = Math.max(0, ...[...known.values()].map((v) => v.tournamentId || 0), 0);
   const start = FROM !== null ? FROM : Math.max(1, Math.max(remembered, fromContests, 1) - BACK);
   log("starting id " + start + " (remembered " + (remembered || "none") +
       ", contests " + (fromContests || "none") + ")");
@@ -211,7 +260,7 @@ async function main() {
   try { sock.close(); } catch (_) {}
   log(tournaments.size + " tournaments seen, highest id " + highest);
 
-  let archived = 0, locked = 0;
+  let archived = 0, locked = 0, summarised = 0;
   const ordered = [...tournaments.entries()].sort((a, b) => a[0] - b[0]);
   for (const entry of ordered) {
     const id = entry[0], t = entry[1];
@@ -230,40 +279,69 @@ async function main() {
       continue;
     }
 
+    const info = known.get(contestId) || null;
     const final = await read("contests/" + contestId + "/results/final");
     const have = final && Number((final.fields && final.fields.fieldSize &&
       final.fields.fieldSize.integerValue) || 0);
     const reported = Number(t.total_players || 0);
-    // Already frozen with the whole field, nothing to redo.
-    if (have && (!reported || have === reported)) continue;
+    const frozen = Boolean(have && (!reported || have === reported));
 
-    const players = await fetchRoster(id);
-    if (!players || !players.length) { log("  " + id + ": no roster, skipped"); continue; }
-    if (have === players.length) continue;
+    let players = null;
+    if (frozen) {
+      // Already have the whole field. Only a summary might still be missing,
+      // on the real contest or on its "test-<id>" dry run.
+      const testMeta = known.get("test-" + id);
+      const realDone = Boolean(info && info.hasSummary);
+      const testDone = !testMeta || testMeta.hasSummary;
+      if (realDone && testDone) continue;
+      players = decodePlayers(final);
+    } else {
+      players = await fetchRoster(id);
+      if (!players || !players.length) { log("  " + id + ": no roster, skipped"); continue; }
+      if (have === players.length && info && info.hasSummary) continue;
 
-    if (!known.has(contestId)) await write("contests/" + contestId, { tournamentId: id, gameStarted: false });
-    await write("contests/" + contestId, {
-      tournamentId: id, title: t.title || null, venue: t.venue || null,
-      td: t.td || null, date: t.date || null, fieldSize: players.length,
-      gameStarted: true, updatedAt: new Date(),
-    });
-    await write("contests/" + contestId + "/results/final", {
-      fieldSize: players.length,
-      players: players.map((p) => ({
-        id: Number(p.id), name: String(p.name), nickname: p.nickname || null,
-        placement: p.placement == null ? null : p.placement,
-        elimination_position: p.elimination_position == null ? null : p.elimination_position,
-        hitman_name: p.hitman_name || null,
-        is_active: Boolean(p.is_active),
-      })),
-      frozenAt: new Date(),
-    });
-    archived++;
-    log("  archived " + id + ": " + (t.venue || t.title || "game") + " (" + players.length + " players)");
+      await write("contests/" + contestId + "/results/final", {
+        fieldSize: players.length,
+        players: players.map((p) => ({
+          id: Number(p.id), name: String(p.name), nickname: p.nickname || null,
+          placement: p.placement == null ? null : p.placement,
+          elimination_position: p.elimination_position == null ? null : p.elimination_position,
+          hitman_name: p.hitman_name || null,
+          is_active: Boolean(p.is_active),
+        })),
+        frozenAt: new Date(),
+      });
+      archived++;
+      log("  archived " + id + ": " + (t.venue || t.title || "game") + " (" + players.length + " players)");
+    }
+
+    if (!players.length) continue;
+
+    // The real contest, and the "test-<id>" dry-run contest alongside it. Test
+    // contests hold the entries made while TEST_MODE was on, and both tabs
+    // count them, so they need a summary from the same roster.
+    for (const cid of [contestId, "test-" + id]) {
+      const meta = known.get(cid) || null;
+      if (cid !== contestId && !meta) continue;        // no dry run for this game
+      if (meta && meta.hasSummary && frozen) continue;
+      const summary = buildSummary(players, await readEntries(cid));
+      if (!meta) await write("contests/" + cid, { tournamentId: id, gameStarted: false });
+      await write("contests/" + cid, {
+        tournamentId: id, title: t.title || null, venue: t.venue || null,
+        td: t.td || null, date: t.date || null, fieldSize: players.length,
+        gameStarted: true, summary: summary, updatedAt: new Date(),
+      });
+      summarised++;
+      if (summary.entryCount) {
+        log("  " + cid + ": " + summary.entryCount + " entries, won by " +
+            (summary.standings[0] ? summary.standings[0].name : "?"));
+      }
+    }
   }
 
   if (highest > remembered) await write("config/discovery", { newest: highest, updatedAt: new Date() });
-  log("done: " + archived + " archived, " + locked + " locked, frontier " + Math.max(highest, remembered));
+  log("done: " + archived + " archived, " + summarised + " summarised, " + locked +
+      " locked, frontier " + Math.max(highest, remembered));
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });

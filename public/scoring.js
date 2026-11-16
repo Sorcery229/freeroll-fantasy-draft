@@ -202,3 +202,56 @@ export function maxAchievable(fieldSize, cfg = SCORING) {
 function round1(n) {
   return Math.round(n * 10) / 10;
 }
+
+/**
+ * Rank entries for one game. Ties break on how many picks are still alive,
+ * then on name so the order is stable.
+ *
+ * Lives here rather than in app.js because the scheduled archiver computes the
+ * same standings server-side, and the two must not drift apart.
+ */
+export function computeStandings(players, entries) {
+  return entries
+    .map((e) => ({ ...e, score: scoreEntry(e.picks ?? [], players) }))
+    .sort((a, b) => b.score.totalPoints - a.score.totalPoints ||
+      b.score.picksAlive - a.score.picksAlive ||
+      String(a.name).localeCompare(String(b.name)))
+    .map((row, i) => ({ ...row, rank: i + 1 }));
+}
+
+/**
+ * Precompute what the Finished and Season tabs display, and store it on the
+ * contest document itself.
+ *
+ * Those tabs used to read every contest and then, for each one, its entries
+ * subcollection and its frozen roster. At 40-odd archived games that is ninety
+ * round trips, which wedged the Firestore channel in Safari and left the page
+ * showing "Could not reach the database". A finished game's standings can never
+ * change, so they are computed once here instead. Both views then need a single
+ * query.
+ */
+export function buildSummary(players, entries) {
+  const champ = players.find((p) => Number(p.placement) === 1)
+    || players.find((p) => Number(p.elimination_position) === players.length)
+    || players.find((p) => p.is_active);
+  const rows = computeStandings(players, entries);
+  return {
+    champion: champ ? (champ.nickname || champ.name) : null,
+    entryCount: entries.length,
+    standings: rows.map((r) => ({
+      entrantId: r.entrantId,
+      name: String(r.name || ""),
+      rank: r.rank,
+      totalPoints: r.score.totalPoints,
+      seasonPoints: seasonPointsForRank(r.rank),
+      picks: r.score.picks.map((p) => ({
+        name: String(p.name || ""),
+        // finishedPlace is deliberately null while a player is still in, which
+        // is right for a live game. In a finished one the last survivor is the
+        // winner, so fall back to the resolved place or the champion reads "?".
+        place: p.finishedPlace != null ? Number(p.finishedPlace)
+          : (p.effectivePlace != null ? Number(p.effectivePlace) : null),
+      })),
+    })),
+  };
+}

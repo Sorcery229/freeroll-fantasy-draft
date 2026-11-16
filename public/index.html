@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Freeroll Fantasy Draft</title>
 <link rel="stylesheet" href="/styles.css" />
+
+<!-- Open the connections now, while the HTML is still parsing, rather than
+     discovering each host one at a time once the scripts start running. -->
+<link rel="preconnect" href="https://cdn.socket.io" crossorigin />
+<link rel="preconnect" href="https://www.gstatic.com" crossorigin />
+<link rel="preconnect" href="https://openbarleague.com" crossorigin />
+<link rel="preconnect" href="https://firestore.googleapis.com" crossorigin />
+<link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin />
+<link rel="modulepreload" href="/scoring.js" />
+<link rel="modulepreload" href="/config.js" />
 </head>
 <body>
 <header>
@@ -58,6 +68,11 @@
       <p class="muted">Select a tournament to make picks and follow live standings</p>
     </div>
     <div id="home-cards" class="cards"></div>
+    <div id="home-searching" class="empty" hidden>
+      <div class="trophy">🔎</div>
+      <h2>Looking for tonight&rsquo;s games</h2>
+      <p class="muted">Checking the Freeroll live feed.</p>
+    </div>
     <div id="home-empty" class="empty" hidden>
       <div class="trophy">🏆</div>
       <h2>No Active Tournaments</h2>
@@ -157,7 +172,7 @@
   <button id="set-tournament" class="link" hidden>Set tournament</button>
 </footer>
 
-<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+<script defer src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
 <script type="module" src="/app.js"></script>
 </body>
 </html>

@@ -2,7 +2,12 @@
   "name": "freeroll-fantasy-archiver",
   "private": true,
   "type": "module",
-  "dependencies": { "socket.io-client": "^4.8.1" },
+  "dependencies": {
+    "socket.io-client": "^4.8.1",
+    "undici": "^8.12.4"
+  },
   "//": "https-proxy-agent is only needed when running behind an HTTP proxy; CI does not need it",
-  "devDependencies": { "https-proxy-agent": "^7.0.6" }
+  "devDependencies": {
+    "https-proxy-agent": "^7.0.6"
+  }
 }

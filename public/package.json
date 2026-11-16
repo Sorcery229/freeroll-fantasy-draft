@@ -1,0 +1,4 @@
+{
+  "//": "Marks public/*.js as ES modules. The browser does not need this; scripts/archive.mjs does, because it imports scoring.js and Node 20 would otherwise treat it as CommonJS.",
+  "type": "module"
+}
