@@ -78,6 +78,8 @@ const state = {
   uid: null, name: null,
   view: "home",
   projectId: null,       // for the REST reads on the Finished and Season tabs
+  contestEnsured: false, // contests/{id} exists, so entries may be written
+  lockMirrored: false,   // game_started has been copied into Firestore
   booted: false,         // boot() has run; auth must not re-run discovery
   discovering: false,    // a tournament search is in flight
   follow: [],            // tournament ids shown on the home page
@@ -197,7 +199,6 @@ async function handleAuth(user) {
 function attachContest() {
   if (state.activeId == null || !db || !state.uid) return;
   state.contestId = TEST_MODE ? `test-${state.activeId}` : String(state.activeId);
-  prepareContest(state.activeId);
   watchEntries();
   render();
 }
@@ -468,33 +469,67 @@ function withClientClock(t) {
 function onData(id) {
   if (id === state.activeId) {
     if (TEST_MODE) buildLiveMocks();
-    saveContestMeta();
+    syncContest();
     maybeFreezeResults();
   }
   render();
 }
 
 /**
- * Persist the tournament's identity on the contest doc, so the Finished tab can
- * describe a game without needing a socket connection to it. Written once per
- * session, after the tournament record first arrives.
+ * Keep contests/{id} in step with the live tournament.
+ *
+ * Three separate writes, because firestore.rules treats them differently and
+ * each was verified against the live rules:
+ *
+ *   1. ENSURE. The document must exist before anyone can enter, and the create
+ *      rule demands `gameStarted == false`. The old code wrote the metadata
+ *      without that field, which is denied, so in real mode the contest was
+ *      never created and no picks could be submitted at all. Sent as a merge:
+ *      harmless on a contest that is already open, refused on one already
+ *      locked, which is exactly right since that one already exists.
+ *   2. METADATA. Allowed whether the contest is open or locked, which is what
+ *      lets the Finished tab name a game.
+ *   3. LOCK. Mirrors the TD starting the clock into `gameStarted`, which the
+ *      rules then use to refuse further entries. Monotonic: it cannot go back.
+ *
+ * The lock used to be set only by the scheduled archiver, which GitHub actually
+ * runs about every six hours, so picks could stay open most of the night after
+ * the clock started. Any open page now closes it within seconds.
  */
-async function saveContestMeta() {
+async function syncContest() {
   const c = active();
-  if (!c?.tournament || !state.contestId || state.metaSaved) return;
-  state.metaSaved = true;
+  if (!c?.tournament || !state.contestId || !db || !state.uid) return;
   const t = c.tournament;
-  try {
-    await setDoc(doc(db, "contests", String(state.contestId)), {
-      tournamentId: state.activeId,
-      title: t.title ?? null,
-      venue: t.venue ?? null,
-      td: t.td ?? null,
-      date: t.date ?? null,
-      fieldSize: c.players.length,
-      updatedAt: serverTimestamp(),
-    }, { merge: true });
-  } catch (e) { console.warn("contest meta:", e.message); }
+  const ref = doc(db, "contests", String(state.contestId));
+
+  if (!state.contestEnsured) {
+    state.contestEnsured = true;
+    try {
+      await setDoc(ref, { tournamentId: state.activeId, gameStarted: false }, { merge: true });
+    } catch (_) { /* already exists and locked: nothing to create */ }
+  }
+
+  if (!state.metaSaved) {
+    try {
+      await setDoc(ref, {
+        tournamentId: state.activeId,
+        title: t.title ?? null,
+        venue: t.venue ?? null,
+        td: t.td ?? null,
+        date: t.date ?? null,
+        fieldSize: c.players.length,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+      state.metaSaved = true;
+    } catch (e) { console.warn("contest meta:", e.message); }
+  }
+
+  if (!TEST_MODE && t.game_started && !state.lockMirrored) {
+    state.lockMirrored = true;
+    try {
+      await setDoc(ref, { gameStarted: true, updatedAt: serverTimestamp() }, { merge: true });
+    } catch (e) { console.warn("lock:", e.message); }
+  }
 }
 
 /**
@@ -542,21 +577,14 @@ function openTournament(id, view = "standings") {
   state.mockEntries = [];
   state.entries = [];
   state.metaSaved = false;
+  state.contestEnsured = false;
+  state.lockMirrored = false;
   state.resultsFrozen = false;
   followTournament(id);
-  prepareContest(id);
   watchEntries();
   showView(view);
 }
 
-async function prepareContest(id) {
-  if (!TEST_MODE || !db || !state.uid) return;
-  try {
-    await withTimeout(setDoc(doc(db, "contests", String(state.contestId)),
-      { tournamentId: id, gameStarted: false, title: `Test ${id}`, updatedAt: serverTimestamp() },
-      { merge: true }), 6000);
-  } catch (e) { console.warn("contest prepare:", e.message); }
-}
 
 // ---------------------------------------------------------------- entries
 function watchEntries() {
@@ -626,6 +654,11 @@ async function submitPicks() {
     return;
   }
   try {
+    // Guarantee the contest document exists first. Entries are refused unless
+    // it does, and that refusal is indistinguishable from the clock having
+    // started, so without this a first entrant could be told picks were closed
+    // on a game that had not begun.
+    await syncContest();
     await setDoc(doc(db, "contests", String(state.contestId), "entries", state.uid),
       { name: state.name, picks, submittedAt: serverTimestamp() });
     $("#draft-error").textContent = "";
@@ -1217,6 +1250,12 @@ async function loadSummaries() {
 
   return rows
     .filter((x) => x.id !== DEMO_ID)
+    // Drop the "test-<id>" dry runs. While TEST_MODE was on, entries were
+    // written to those instead of the real contest, so every one of those games
+    // appeared on this tab twice: the real contest saying nobody entered, and
+    // its twin holding the picks. They are left in the database but never
+    // shown, which also keeps the dry-run entries out of the season table.
+    .filter((x) => !String(x.id).startsWith("test-"))
     .filter((x) => x.summary);
 }
 
@@ -1232,7 +1271,7 @@ async function renderFinished() {
     }
     if (!loaded.length) {
       node.innerHTML = `<p class="muted">No finished games yet. Games are archived
-        automatically within about fifteen minutes of ending.</p>`;
+        automatically, usually within a few hours of ending.</p>`;
       return;
     }
 
@@ -1327,7 +1366,8 @@ async function renderSeason() {
     }
 
     if (!totals.size) {
-      node.innerHTML = `<p class="muted">No finished games with entries yet.</p>`;
+      node.innerHTML = `<p class="muted">Nobody has entered a contest yet. The
+        season table fills in once players start making picks.</p>`;
       return;
     }
 

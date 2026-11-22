@@ -28,11 +28,13 @@ export const FREEROLL_ORIGIN = "https://openbarleague.com";
 // `?t=<id>` still overrides everything.
 export const FOLLOW_TOURNAMENT_IDS = [717];
 
-// TEST MODE. While true the app:
+// TEST MODE. OFF: this is a real contest. Picks close the moment the TD starts
+// the clock, entries are written to the real contest, and no synthetic
+// predictions are shown. While true the app:
 //   * lets you submit picks even after the clock has started,
 //   * stores those picks under contest id "test-<tournamentId>" instead of the
 //     real contest, so nothing pollutes a genuine contest,
 //   * never mirrors game_started to Firestore (so the test contest stays open),
 //   * injects synthetic predictions attributed to real players in the field.
 // Set to false for a real contest, where picks must close when the clock starts.
-export const TEST_MODE = true;
+export const TEST_MODE = false;
